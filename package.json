@@ -1,0 +1,22 @@
+{
+  "name": "desktop-claude",
+  "productName": "Desktop Claude",
+  "version": "1.0.0",
+  "description": "A little Claude that lives on your desktop: jumps, swings, dances to your music, and does things when you ask. 100% local.",
+  "main": "src/main/main.js",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "setup:voice": "node scripts/setup-voice.js",
+    "setup:ai": "node scripts/setup-ai.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.4.5"
+  },
+  "dependencies": {
+    "koffi": "^3.3.2"
+  }
+}

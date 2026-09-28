@@ -1,0 +1,11 @@
+# Installed by `npm install`
+node_modules/
+
+# Speech engine and model, downloaded by `npm run setup:voice`
+# (the model alone is 141 MB, over GitHub's 100 MB file limit)
+vendor/
+
+# Logs and Windows clutter
+*.log
+Thumbs.db
+desktop.ini
