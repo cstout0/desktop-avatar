@@ -1,6 +1,8 @@
 // Speech bubble (DOM) with a typewriter effect. Its state lives in st.ui so a
-// half-typed sentence survives Claude walking onto the other monitor.
-import { BODY, CENTER_Y } from '../sim/constants.js';
+// half-typed sentence survives the character walking onto the other monitor.
+import { CENTER_Y } from '../sim/constants.js';
+import { headRise } from '../look.js';
+import { bodyMotion } from '../motion.js';
 
 const CPS = 55; // characters per second
 
@@ -55,7 +57,7 @@ export class BubbleView {
     });
   }
 
-  /** Advance typing and position the bubble. Returns true if Claude is "talking". */
+  /** Advance typing and position the bubble. Returns true if the character is "talking". */
   update(st, ui, dt, origin, area) {
     const b = ui.bubble;
     const active = b.sticky || st.t < b.until || this.hovered;
@@ -103,10 +105,10 @@ export class BubbleView {
       this.visible = true;
       requestAnimationFrame(() => this.el.classList.add('show'));
     }
-    // Position above Claude's head, clamped to this monitor.
+    // Position above the character's head, clamped to this monitor.
     const c = st.char;
     const s = c.scale;
-    const headY = c.y - (CENTER_Y + BODY.h / 2 + BODY.antenna + 12) * s;
+    const headY = c.y - (CENTER_Y + headRise(st.look) + bodyMotion(st).lift + 12) * s;
     const w = this.el.offsetWidth;
     const h = this.el.offsetHeight;
     const margin = 10;

@@ -21,6 +21,7 @@ export function spawn(st, type, x, y, opts = {}) {
     drag: opts.drag ?? 0,
     wobble: opts.wobble ?? 0,
     seed: rand(st) * TAU,
+    text: opts.text ?? null,
   };
   st.particles.push(p);
   return p;

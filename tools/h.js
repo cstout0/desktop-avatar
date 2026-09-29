@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const infoFile = path.join(process.env.APPDATA, 'Desktop Claude', 'harness.json');
+// Same folder the app uses: AVATAR_USER_DATA when testing a throwaway copy.
+const infoFile = path.join(process.env.AVATAR_USER_DATA || path.join(process.env.APPDATA, 'Desktop Avatar'), 'harness.json');
 
 export function harnessInfo() {
   return JSON.parse(fs.readFileSync(infoFile, 'utf8'));

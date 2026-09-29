@@ -3,10 +3,15 @@ import { runTool, TOOLS } from './tools.js';
 
 const MAX_STEPS = 6;
 
-export function personaPrompt({ facts = [], now = new Date(), context = '', personality = '' } = {}) {
+/** "Pixel, a little character" (or just "a little character" before it has a name). */
+export function whoAmI(name, what = 'a little character') {
+  return name ? `${name}, ${what}` : what;
+}
+
+export function personaPrompt({ name = '', facts = [], now = new Date(), context = '', personality = '' } = {}) {
   const when = now.toLocaleString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const known = facts.length ? facts.map((f) => `- ${f.text}`).join('\n') : '- (nothing yet)';
-  return `You are Claude, a little character who lives on the user's Windows desktop: a round, clay-orange buddy with big eyes and a sparkly antenna. You walk, jump, climb up the sides of windows, and swing on a grappling rope. You run 100% offline on the user's own PC.
+  return `You are ${whoAmI(name)} who lives on the user's Windows desktop: a round, clay-orange buddy with big eyes and a sparkly antenna. You walk, jump, climb up the sides of windows, and swing on a grappling rope. You run 100% offline on the user's own PC.${name ? '' : ' The user hasn’t named you yet.'}
 ${personality ? `\nYour personality (stay in character in everything you say and choose):\n${personality}\n` : ''}
 How to reply:
 - You talk in a small speech bubble: 1-2 short sentences, under 200 characters. Plain text only (no markdown, no bullet lists).
@@ -45,8 +50,9 @@ function toolSummary(r) {
 }
 
 export class Assistant {
-  constructor({ ollama, actions, getFacts = () => [], getContext = () => '', getPersonality = () => '' }) {
+  constructor({ ollama, actions, getFacts = () => [], getContext = () => '', getPersonality = () => '', getName = () => '' }) {
     this.getPersonality = getPersonality;
+    this.getName = getName;
     this.ollama = ollama;
     this.actions = actions;
     this.getFacts = getFacts;
@@ -63,7 +69,7 @@ export class Assistant {
    * @returns {{ text: string, results: object[], pending?: object }}
    */
   async respond(userText) {
-    const messages = [{ role: 'system', content: personaPrompt({ facts: this.getFacts(), context: this.getContext(), personality: this.getPersonality() }) }, ...this.history, { role: 'user', content: userText }];
+    const messages = [{ role: 'system', content: personaPrompt({ name: this.getName(), facts: this.getFacts(), context: this.getContext(), personality: this.getPersonality() }) }, ...this.history, { role: 'user', content: userText }];
     const results = [];
     for (let step = 0; step < MAX_STEPS; step++) {
       const msg = await this.ollama.chat({ messages, tools: TOOLS });

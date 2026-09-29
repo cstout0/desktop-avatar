@@ -4,9 +4,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { vendorDir } from './vendor.js';
 
-// Biases recognition toward Claude's name and typical commands.
-const PROMPT = 'Claude, create a folder named Test Folder. Open Spotify. Set a timer for 5 minutes. Take a note.';
+// Biases recognition toward the character's name and typical commands.
+const PROMPT = 'Create a folder named Test Folder. Open Spotify. Set a timer for 5 minutes. Take a note.';
+const promptFor = (name) => (name ? `${name}, ${PROMPT[0].toLowerCase()}${PROMPT.slice(1)}` : PROMPT);
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -21,8 +23,9 @@ function freePort() {
 }
 
 export class Whisper {
-  constructor({ root }) {
-    this.dir = path.join(root, 'vendor', 'whisper');
+  constructor({ root, getName = () => '' }) {
+    this.getName = getName;
+    this.dir = vendorDir(root, 'whisper');
     this.proc = null;
     this.port = null;
     this.starting = null;
@@ -79,15 +82,19 @@ export class Whisper {
     this.starting = null;
   }
 
-  /** @param wav Buffer/Uint8Array with a 16 kHz mono 16-bit WAV. @returns text */
-  async transcribe(wav) {
+  /**
+   * @param wav Buffer/Uint8Array with a 16 kHz mono 16-bit WAV.
+   * @param opts.commands  bias toward spoken commands (off for video soundtracks)
+   * @returns text
+   */
+  async transcribe(wav, { commands = true } = {}) {
     const ok = await this.start();
     if (!ok) throw new Error('speech engine not available (run: npm run setup:voice)');
     const form = new FormData();
     form.append('file', new Blob([wav], { type: 'audio/wav' }), 'speech.wav');
     form.append('temperature', '0.0');
     form.append('response_format', 'json');
-    form.append('prompt', PROMPT);
+    if (commands) form.append('prompt', promptFor(this.getName()));
     const res = await fetch(`http://127.0.0.1:${this.port}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`speech engine HTTP ${res.status}`);
     const j = await res.json();

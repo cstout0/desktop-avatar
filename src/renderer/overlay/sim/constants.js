@@ -1,5 +1,5 @@
 // Tuning values. Distances are in px at character scale 1 and get multiplied by
-// the character's scale, so a bigger Claude moves the same in "body lengths".
+// the character's scale, so a bigger character moves the same in "body lengths".
 
 export const BODY = {
   w: 50, // body width
@@ -36,7 +36,7 @@ export const PHYS = {
   wallBounce: 0.5,
   floorBounce: 0.34,
   ceilingBounce: 0.3,
-  bounceMin: 620, // impact speed above which a thrown Claude bounces
+  bounceMin: 620, // impact speed above which a thrown character bounces
   dizzyImpact: 2100,
   throwMax: 4200,
   ropeMax: 720,
@@ -48,6 +48,10 @@ export const PHYS = {
   heldDamping: 2.4,
   climbUp: 150,
   climbDown: 240,
+  // With wings: every jump press in the air is a flap; holding jump glides.
+  flapVel: 640,
+  flapCD: 0.13,
+  glideMax: 190,
 };
 
 export const SUBSTEP = 1 / 240;

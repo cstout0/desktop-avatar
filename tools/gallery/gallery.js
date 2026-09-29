@@ -1,4 +1,4 @@
-// Renders Claude in many poses/expressions for visual review.
+// Renders the character in many poses/expressions for visual review.
 import { createState } from '../../src/renderer/overlay/sim/index.js';
 import { drawCharacter, drawRope } from '../../src/renderer/overlay/render/character.js';
 import { drawParticles } from '../../src/renderer/overlay/render/effects.js';
@@ -6,7 +6,7 @@ import { drawParticles } from '../../src/renderer/overlay/render/effects.js';
 const params = new URLSearchParams(location.search);
 const SCALE = Number(params.get('scale') || 1.6);
 
-// Icon mode: a single happy Claude filling a transparent square canvas.
+// Icon mode: a single happy character filling a transparent square canvas.
 if (params.get('icon')) {
   const size = Number(params.get('icon'));
   const canvas = document.getElementById('c');

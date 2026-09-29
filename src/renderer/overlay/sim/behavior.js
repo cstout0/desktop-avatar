@@ -1,12 +1,13 @@
-// Claude's autonomous brain. Each state "presses buttons" on a virtual
+// The character's autonomous brain. Each state "presses buttons" on a virtual
 // controller, so autonomous movement obeys exactly the same physics as keyboard
 // control. All state lives in st.brain (plain data) to survive hand-offs.
 import { BODY, CENTER_Y, HIT, PHYS as P } from './constants.js';
-import { centerOf, fireRope, handPoint, jumpHeight, releaseRope } from './physics.js';
+import { canFly, centerOf, fireRope, handPoint, jumpHeight, releaseRope } from './physics.js';
 import { express, kick, physicalPose, setPose } from './anim.js';
 import { burst, spawn } from './particles.js';
 import { clamp, pick, rand, randRange, weighted } from './util.js';
 import { allEdges, groundSpan, platformFor, platKey } from './world.js';
+import { newBall, newToyWin, punchToy, TOY_KINDS, toyExtents } from './toys.js';
 
 export function newBrain() {
   return {
@@ -91,7 +92,7 @@ function cursorDist(st) {
   return Math.hypot(st.cursor.x - cen.x, st.cursor.y - cen.y);
 }
 
-/** Platforms Claude can reach by jumping straight up through their edge. */
+/** Platforms the character can reach by jumping straight up through their edge. */
 function hopTargets(st, world) {
   const c = st.char;
   const s = c.scale;
@@ -136,7 +137,7 @@ function ropeTargets(st, world) {
   return out;
 }
 
-/** Window sides Claude can jump onto and climb up to the title bar. */
+/** Window sides the character can jump onto and climb up to the title bar. */
 function climbTargets(st, world) {
   const c = st.char;
   const s = c.scale;
@@ -204,6 +205,7 @@ function otherRegion(st, world) {
 function choose(st, world) {
   const c = st.char;
   const s = c.scale;
+  if (st.focus?.phase === 'focus' && c.mode === 'ground') return goto(st, 'work');
   if (st.audio.music && st.settings.audio) return goto(st, 'dance');
   const idleFor = st.t - st.stats.lastInteraction;
   if (idleFor > st.settings.sleepAfter && rand(st) < 0.4 && c.mode === 'ground') return goto(st, 'sleep');
@@ -212,7 +214,11 @@ function choose(st, world) {
   const ropes = hops.length ? [] : ropeTargets(st, world);
   const climbs = climbTargets(st, world);
   const other = otherRegion(st, world);
+  const wings = canFly(st) && c.mode === 'ground';
+  const gloves = st.look?.arms === 'gloves' && c.mode === 'ground' && st.settings.chattiness !== 'quiet';
   const next = weighted(st, [
+    ['fly', wings ? 2.6 : 0],
+    ['shadowbox', gloves ? 0.45 : 0],
     ['idle', 2.6],
     ['walk', 3.2],
     ['sit', onPlatform ? 2.2 : 0.9],
@@ -256,7 +262,35 @@ function choose(st, world) {
     return goto(st, 'emote', { kind, dur: EMOTE_DUR[kind] });
   }
   if (next === 'descend') return goto(st, 'descend', { drop: rand(st) < 0.35 });
+  if (next === 'fly') return startFlight(st, world);
+  if (next === 'shadowbox') return startGame(st, world, { game: 'box', total: 1, casual: true });
   return goto(st, next);
+}
+
+/** Window tops it could fly up to (with wings, any height will do). */
+function flyTargets(st, world) {
+  const c = st.char;
+  const s = c.scale;
+  if (!st.settings.walkOnWindows) return [];
+  const here = world.regions.find((r) => c.x >= r.x && c.x <= r.x + r.w);
+  return world.platforms
+    .filter((p) => p.x2 - p.x1 > 70 * s && c.ground?.id !== platKey(p) && (!here || (p.x2 > here.x && p.x1 < here.x + here.w)) && Math.abs((p.x1 + p.x2) / 2 - c.x) < 1600 * s && p.y < c.y + 5)
+    .map((p) => ({ p, x: clamp(c.x + randRange(st, -200, 200) * s, p.x1 + 30 * s, p.x2 - 30 * s) }));
+}
+
+/** Take off: to a window top most of the time, otherwise a loop through the air and back down. */
+function startFlight(st, world) {
+  const c = st.char;
+  const s = c.scale;
+  const targets = flyTargets(st, world);
+  if (targets.length && rand(st) < 0.75) {
+    const f = pick(st, targets);
+    return goto(st, 'fly', { pid: platKey(f.p), x: f.x });
+  }
+  const r = world.regions.find((x) => c.x >= x.x && c.x <= x.x + x.w) ?? world.regions[0];
+  const x = clamp(c.x + randRange(st, -700, 700) * s, r.x + 90 * s, r.x + r.w - 90 * s);
+  const y = Math.max(r.y + 110 * s, c.y - randRange(st, 260, 560) * s);
+  return goto(st, 'fly', { x, y, free: true });
 }
 
 const EMOTE_DUR = { wave: 1.7, stretch: 2.2, lookaround: 2.4, flip: 1.0, hum: 2.8, shrug: 1.4, celebrate: 1.8, jump: 0.9, spin: 1.2, yawn: 2.4, laugh: 1.6 };
@@ -655,7 +689,277 @@ const STATES = {
       const cen = centerOf(c);
       spawn(st, 'note', cen.x + 18 * c.scale * c.facing, cen.y - 20 * c.scale, { vx: 20 * c.facing, vy: -40, max: 1.6, size: 12, wobble: 16, hue: rand(st) * 360 });
     }
-    if (b.t > (b.data.dur ?? 1.5) && c.mode === 'ground') goto(st, 'idle', { dur: 0.8 });
+    if (b.t > (b.data.dur ?? 1.5) && c.mode === 'ground') {
+      // A routine (e.g. a stretch break) plays several emotes in a row.
+      const q = b.data.queue;
+      if (q?.length) goto(st, 'emote', { kind: q[0], dur: EMOTE_DUR[q[0]] ?? 1.5, queue: q.slice(1) });
+      else goto(st, 'idle', { dur: 0.8 });
+    }
+  },
+
+  // Wings: take off, cruise over to a window top (or a spot in the air), glide down, land.
+  fly(st, world, b, input, dt) {
+    const c = st.char;
+    const s = c.scale;
+    const d = b.data;
+    setPose(st, physicalPose(c));
+    if (!canFly(st)) return goto(st, 'idle');
+    const p = d.pid ? platformFor(world, d.pid, d.x) : null;
+    if (d.pid && !p) return goto(st, 'idle'); // that window went away
+    d.airT = d.airT ?? 0;
+    if (c.mode === 'ground') {
+      if (d.airT > 0.15) {
+        // Landed.
+        if (p && c.ground?.id === d.pid && rand(st) < 0.4) express(st, { eyes: 'happy', mouth: 'open' }, 0.8);
+        return goto(st, p && c.ground?.id === d.pid && rand(st) < 0.35 ? 'sit' : 'idle');
+      }
+      input.jumpPressed = true; // take off
+      input.jump = true;
+      d.airT = 0.001;
+      return;
+    }
+    if (c.mode !== 'air') return goto(st, 'idle');
+    d.airT += dt;
+    d.flapT = (d.flapT ?? 0) - dt;
+    const tx = p ? clamp(d.x, p.x1 + 24 * s, p.x2 - 24 * s) : d.x;
+    const cruise = p ? p.y - 80 * s : d.y;
+    const dx = tx - c.x;
+    if (Math.abs(dx) > 8 * s) {
+      input[dx > 0 ? 'right' : 'left'] = true;
+      input.run = Math.abs(dx) > 160 * s;
+    }
+    input.jump = true; // held: glides whenever it's falling
+    const over = Math.abs(dx) < 40 * s;
+    if (p && over && c.y < p.y - 10 * s) {
+      // Right over the window: stop flapping and glide down onto it.
+      d.descending = true;
+    } else if (!p && d.free && over && Math.abs(c.y - cruise) < 90 * s) {
+      d.hover = (d.hover ?? 0) + dt;
+      if (d.hover > 1.1 && !d.looped) {
+        d.looped = true;
+        c.flipT = 0.45; // a little loop-de-loop at the top
+      }
+      if (d.hover > 1.6) d.descending = true;
+    }
+    if (!d.descending && c.y > cruise && c.vy > -240 * s && d.flapT <= 0) {
+      input.jumpPressed = true;
+      d.flapT = 0.17;
+    }
+    if (d.descending && !p) input.jump = d.airT % 1 < 0.8; // drift down, not too slowly
+    if (d.airT > 10) {
+      input.jump = false;
+      d.descending = true;
+    }
+  },
+
+  // ---- mini-games ----
+
+  // Fetch: bring the ball to the player, wait for a throw, chase it, catch it.
+  fetch(st, world, b, input, dt) {
+    const g = st.game;
+    const ball = st.ball;
+    const c = st.char;
+    const s = c.scale;
+    if (g?.kind !== 'fetch' || !ball) return goto(st, 'idle');
+    setPose(st, physicalPose(c));
+    if (g.phase === 'bring') {
+      ball.carried = true;
+      const span = c.mode === 'ground' ? groundSpan(world, c) : null;
+      const tx = span ? clamp(st.cursor.x, span.x1 + 30 * s, span.x2 - 30 * s) : c.x;
+      const near = Math.abs(tx - c.x) < 60 * s;
+      const took = st.t - (g.bringStart ?? st.t);
+      if (c.mode === 'ground' && !near && took < 7) walkTo(st, input, tx, Math.abs(tx - c.x) > 250 * s);
+      else if (c.mode === 'ground' && (near || took >= 7)) {
+        // Drop it in front of the player, then wait for the throw.
+        ball.carried = false;
+        ball.vx = c.facing * 90;
+        ball.vy = -260;
+        g.phase = 'wait';
+        g.waitSince = st.t;
+        b.t = 0;
+        if (!g.hinted) {
+          g.hinted = true;
+          say(st, pick(st, ['Throw it! Throw it! 🎾', 'Grab the ball and throw it!', 'Ready! Throw it anywhere!']), 'happy', 3);
+        }
+      }
+      return;
+    }
+    if (g.phase === 'wait') {
+      // You carried it off somewhere, or the ball rolled away: go and get it back
+      // (that doesn't count as a catch).
+      if (!ball.held && ball.resting && st.t - (g.waitSince ?? 0) > 1.5 && Math.abs(ball.x - c.x) > 320 * s) {
+        g.phase = 'chase';
+        g.retrieve = true;
+        g.thrownAt = st.t;
+        return;
+      }
+      if (c.mode === 'ground') {
+        const look = ball.held ? ball.x : st.cursor.x;
+        if (Math.abs(look - c.x) > 12 * s) c.facing = Math.sign(look - c.x);
+        // Can't sit still: little excited bounces.
+        if (b.t >= (b.data.nextBounce ?? 1)) {
+          b.data.nextBounce = b.t + randRange(st, 0.9, 1.8);
+          kick(st, -0.18);
+          express(st, { eyes: 'happy', mouth: 'open', blush: 0.6 }, 0.6);
+        }
+      }
+      if (st.t - (g.lastThrow ?? g.start) > 100) endFetch(st, 'bored');
+      return;
+    }
+    if (g.phase === 'chase') chaseBall(st, world, b, input, dt);
+  },
+
+  // Boxing: pop-ups drop in; walk up, put the gloves up, jab until they break.
+  box(st, world, b, input) {
+    const g = st.game;
+    const c = st.char;
+    const s = c.scale;
+    if (g?.kind !== 'box') return goto(st, 'idle');
+    if (st.t - g.start > (g.casual ? 30 : 150)) return endBox(st, 'time');
+    if (!st.toys.length) {
+      if (g.spawned >= g.total) return endBox(st, 'done');
+      if (st.t >= g.next) spawnToy(st, world, g);
+      setPose(st, c.mode === 'ground' ? 'guard' : physicalPose(c));
+      return;
+    }
+    const pu = b.data.punch;
+    if (pu) {
+      // Wind-up, strike, recover. The hit lands at the strike.
+      setPose(st, 'punch');
+      const k = st.t - pu.t0;
+      if (!pu.hit && k >= 0.12) {
+        pu.hit = true;
+        const t = st.toys.find((x) => x.id === pu.id);
+        if (t) {
+          const { hw, hh } = toyExtents(t);
+          const reach = Math.abs(t.x - c.x) < hw + 46 * s && t.y + hh > c.y - (CENTER_Y + 32) * s && t.y - hh < c.y;
+          if (reach) {
+            hitToy(st, t, c.x, 1, false);
+            kick(st, 0.12);
+          }
+        }
+      }
+      if (k >= 0.4) b.data.punch = null;
+      return;
+    }
+    if (c.mode !== 'ground') {
+      setPose(st, physicalPose(c));
+      return;
+    }
+    // The nearest pop-up that isn't already knocked out.
+    const live = st.toys.filter((x) => !x.ko);
+    if (!live.length) {
+      setPose(st, 'guard');
+      return;
+    }
+    const t = live.reduce((a, x) => (Math.abs(x.x - c.x) < Math.abs(a.x - c.x) ? x : a));
+    const { hw, hh } = toyExtents(t);
+    if (t.resting && t.y + hh < c.y - 70 * s) {
+      // Stuck up on a window: fly up there, or it gets tired of waiting and drops back down.
+      if (canFly(st) && t.on && t.on !== 'floor') return goto(st, 'fly', { pid: t.on, x: t.x });
+      t.stuck = (t.stuck ?? st.t);
+      if (st.t - t.stuck > 3.5) {
+        burst(st, 'poof', t.x, t.y, 5, { sp0: 20, sp1: 80, max0: 0.4, max1: 0.6, size0: 10, size1: 16 });
+        Object.assign(t, { x: c.x + c.facing * 220 * s, y: c.y - 360 * s, vx: 0, vy: 0, resting: false, on: null, stuck: null });
+      }
+      setPose(st, 'guard');
+      return;
+    }
+    t.stuck = null;
+    const side = c.x <= t.x ? -1 : 1;
+    const span = groundSpan(world, c);
+    const standX = span ? clamp(t.x + side * (hw + 22 * s), span.x1 + 12 * s, span.x2 - 12 * s) : t.x + side * (hw + 22 * s);
+    if (Math.abs(standX - c.x) > 9 * s && !(Math.abs(t.x - c.x) < hw + 30 * s && Math.sign(t.x - c.x) === c.facing)) {
+      walkTo(st, input, standX, Math.abs(standX - c.x) > 180 * s);
+      setPose(st, physicalPose(c));
+      return;
+    }
+    c.facing = t.x >= c.x ? 1 : -1;
+    setPose(st, 'guard');
+    const settled = Math.abs(t.vx) < 160 * s && t.y + hh > c.y - (CENTER_Y + 30) * s;
+    if (settled && st.t - (b.data.lastPunch ?? -9) > (b.data.combo ? 0.3 : 0.55)) {
+      b.data.punch = { t0: st.t, hit: false, id: t.id, hand: (b.data.hand = -(b.data.hand ?? 1)) };
+      st.anim.punchHand = b.data.hand;
+      b.data.combo = rand(st) < 0.35;
+      b.data.lastPunch = st.t;
+    }
+  },
+
+  // Hide and seek: cover eyes, poof to the hiding spot, peek out, wait to be found.
+  hide(st, world, b) {
+    const g = st.game;
+    const c = st.char;
+    if (g?.kind !== 'hide') {
+      if (c.mode === 'hidden') c.mode = 'air';
+      return goto(st, 'idle');
+    }
+    if (g.phase === 'count') {
+      setPose(st, c.mode === 'ground' ? 'covereyes' : physicalPose(c));
+      if (st.t - g.countStart > 2.6) {
+        const cen = centerOf(c);
+        burst(st, 'poof', cen.x, cen.y, 7, { sp0: 20, sp1: 90, max0: 0.4, max1: 0.7, size0: 12, size1: 20 });
+        const sp = g.spot;
+        c.x = sp.x;
+        c.y = sp.y;
+        c.vx = 0;
+        c.vy = 0;
+        c.mode = 'hidden';
+        c.ground = null;
+        c.facing = sp.face;
+        c.rope.state = 'none';
+        g.phase = 'hidden';
+        g.start = st.t;
+        g.nextGiggle = st.t + randRange(st, 9, 14);
+      }
+      return;
+    }
+    setPose(st, 'hiding');
+    // Warmer, colder: it can't stop giggling when your cursor gets close.
+    const cen = centerOf(c);
+    const s = c.scale;
+    const d = st.t - (st.cursor.t ?? -99) < 4 ? Math.hypot(st.cursor.x - cen.x, st.cursor.y - cen.y) : Infinity;
+    const warm = d < 170 * s ? 2 : d < 450 * s ? 1 : 0;
+    if (warm > (g.warm ?? 0)) g.nextGiggle = Math.min(g.nextGiggle, st.t + (warm === 2 ? 0.3 : 1));
+    g.warm = warm;
+    if (st.t >= g.nextGiggle) {
+      // A giggle and a wiggle of the antenna: the only hint.
+      g.nextGiggle = st.t + (warm === 2 ? randRange(st, 1.6, 2.8) : warm === 1 ? randRange(st, 3.5, 6) : randRange(st, 11, 16));
+      kick(st, warm === 2 ? 0.45 : 0.25);
+      for (let i = 0; i <= warm; i++) {
+        spawn(st, 'note', st.anim.antX, st.anim.antY - 6 * s, { vx: (14 + 10 * i) * c.facing, vy: -34 - 12 * i, max: 1.6, size: 11, wobble: 14, hue: 40 });
+      }
+    }
+    if (st.t - g.start > g.seconds) endHide(st, 'timeout');
+  },
+
+  // A notification: walk over to the app's window, then point it out.
+  visit(st, world, b, input, dt) {
+    const c = st.char;
+    const s = c.scale;
+    const d = b.data;
+    setPose(st, physicalPose(c));
+    if (c.mode !== 'ground') return;
+    const arrived = walkTo(st, input, d.x, Math.abs(d.x - c.x) > 300 * s);
+    if (arrived || b.t > 8 || trackStuck(st, b, dt, input.left || input.right)) {
+      runCommand(st, world, { name: 'peek', x: d.x, y: d.y });
+      goto(st, 'emote', { kind: 'wave', dur: 1.6 });
+    }
+  },
+
+  // Focus session: sits and types on a tiny laptop until the session ends.
+  work(st, world, b) {
+    const c = st.char;
+    if (st.focus?.phase !== 'focus') return goto(st, 'idle', { dur: 0.6 });
+    if (c.mode !== 'ground') {
+      setPose(st, physicalPose(c));
+      return;
+    }
+    setPose(st, 'work');
+    // Now and then it looks up from the screen, sometimes with a determined face.
+    if (b.t >= (b.data.nextLook ?? 4)) {
+      b.data.nextLook = b.t + randRange(st, 6, 12);
+      if (rand(st) < 0.4) express(st, { eyes: 'normal', mouth: 'flat', brows: 'determined' }, 2);
+    }
   },
 
   react(st, world, b) {
@@ -695,6 +999,243 @@ const STATES = {
   controlled() {},
 };
 
+// ---- mini-game helpers ----------------------------------------------------------
+
+const FETCH_OK = new Set(['fetch', 'hop', 'ropeup', 'descend', 'emote', 'react', 'climb', 'wallclimb', 'fly']);
+const BOX_OK = new Set(['box', 'hop', 'descend', 'emote', 'react', 'fly']);
+const gameEvent = (st, e) => (st.gameEvents ??= []).push(e);
+
+function startGame(st, world, cmd) {
+  const c = st.char;
+  if (st.game) stopGame(st, 'switched');
+  if (cmd.game === 'fetch') {
+    const h = handPoint(c);
+    st.ball = newBall(h.x, h.y, c.scale);
+    st.ball.carried = true;
+    st.game = { kind: 'fetch', phase: 'bring', streak: 0, best: cmd.best ?? 0, start: st.t, lastThrow: st.t, bringStart: st.t, hinted: false };
+    say(st, 'Fetch! 🎾 Let me bring you the ball.', 'happy', 2.5);
+    return goto(st, 'fetch');
+  }
+  if (cmd.game === 'box') {
+    st.toys = [];
+    st.game = { kind: 'box', total: cmd.total ?? 5, spawned: 0, kos: 0, start: st.t, next: st.t + 0.7, casual: !!cmd.casual };
+    if (!cmd.casual) say(st, pick(st, ['Pop-up windows? Not on my watch! 🥊', 'Ding ding! Round one! 🥊', 'Let’s box some pop-ups! 🥊']), 'happy', 2.5);
+    return goto(st, 'box');
+  }
+  if (cmd.game === 'hide' && cmd.spot) {
+    st.game = { kind: 'hide', phase: 'count', spot: { ...cmd.spot }, clip: cmd.spot.clip ?? null, seconds: cmd.seconds ?? 60, countStart: st.t, start: st.t };
+    say(st, pick(st, ['Close your eyes and count to three! 🙈', 'Ready or not… cover your eyes! 🙈', 'No peeking! 🙈 One… two… three…']), 'happy', 2.6);
+    return goto(st, 'hide');
+  }
+}
+
+function stopGame(st, why) {
+  if (st.game?.kind === 'fetch') endFetch(st, why);
+  else if (st.game?.kind === 'hide') endHide(st, why);
+  else if (st.game?.kind === 'box') endBox(st, why);
+}
+
+// ---- boxing ----
+
+const POW = ['POW!', 'BAM!', 'WHAM!', 'BONK!', 'THWACK!', 'BOOF!'];
+
+/** A new pretend pop-up drops in near the character. */
+function spawnToy(st, world, g) {
+  const c = st.char;
+  const s = c.scale;
+  const r = world.regions.find((x) => c.x >= x.x && c.x <= x.x + x.w) ?? world.regions[0];
+  let x = c.x + c.facing * randRange(st, 190, 330) * s;
+  if (x < r.x + 90 * s || x > r.x + r.w - 90 * s) x = c.x - c.facing * randRange(st, 190, 330) * s;
+  x = clamp(x, r.x + 70 * s, r.x + r.w - 70 * s);
+  const y = Math.max(r.y + 50 * s, c.y - randRange(st, 380, 480) * s);
+  const kind = TOY_KINDS[(g.spawned + Math.floor(rand(st) * TOY_KINDS.length)) % TOY_KINDS.length];
+  st.toys.push(newToyWin(st, x, y, kind));
+  burst(st, 'poof', x, y, 6, { sp0: 30, sp1: 110, max0: 0.35, max1: 0.6, size0: 12, size1: 20 });
+  g.spawned++;
+  g.next = st.t + 0.9;
+}
+
+/** Knocked-out pop-ups shatter once they land (or a moment after the last hit). */
+function breakToys(st) {
+  const g = st.game;
+  const s = st.char.scale;
+  for (let i = st.toys.length - 1; i >= 0; i--) {
+    const t = st.toys[i];
+    if (!t.ko || (!t.resting && st.t - t.hitT < 0.55)) continue;
+    st.toys.splice(i, 1);
+    burst(st, 'shard', t.x, t.y, 14, { sp0: 90, sp1: 320, max0: 0.5, max1: 0.9, size0: 5, size1: 10, g: 900 * s, hue: t.kind === 'ad' ? 50 : t.kind === 'error' ? 0 : 210 });
+    spawn(st, 'pow', t.x, t.y - t.h * 0.3, { vy: -40 * s, max: 1, size: 16, text: 'K.O.!' });
+    if (g?.kind === 'box') {
+      g.kos++;
+      gameEvent(st, { type: 'box-ko', kos: g.kos, total: g.total });
+      if (!g.casual && g.kos < g.total && rand(st) < 0.5) say(st, pick(st, ['Down it goes! 🥊', 'Closed! ✖️', 'Next!', 'Ha! Take that, pop-up!']), 'happy', 1.6);
+    }
+  }
+}
+
+function endBox(st, why) {
+  const g = st.game;
+  for (const t of st.toys ?? []) burst(st, 'poof', t.x, t.y, 5, { sp0: 20, sp1: 80, max0: 0.4, max1: 0.6, size0: 12, size1: 18 });
+  st.toys = [];
+  st.game = null;
+  const secs = g ? Math.round((st.t - g.start) * 10) / 10 : 0;
+  gameEvent(st, { type: 'box-end', kos: g?.kos ?? 0, total: g?.total ?? 0, secs, why, casual: !!g?.casual });
+  if (g && g.kos > 0 && why !== 'stopped') {
+    express(st, { eyes: 'happy', mouth: 'open', blush: 0.7 }, 2);
+    if (!g.casual) say(st, g.kos >= g.total ? `Flawless! ${g.kos} pop-ups KO’d in ${secs} s! 🏆🥊` : `${g.kos} pop-ups KO’d! 🥊`, 'happy', 3);
+    return goto(st, 'emote', { kind: 'celebrate', dur: 1.8 });
+  }
+  goto(st, 'idle', { dur: 1 });
+}
+
+/** A punch from the user clicking a pop-up (or from the character). */
+function hitToy(st, t, fromX, power, byUser) {
+  const ko = punchToy(st, t, fromX, power);
+  const s = st.char.scale;
+  spawn(st, 'pow', t.x, t.y - t.h * 0.2, { vy: -60 * s, max: 0.7, size: 13, text: ko ? 'SMASH!' : pick(st, POW), rot: randRange(st, -0.3, 0.3) });
+  burst(st, 'star', t.x - Math.sign(t.x - fromX) * t.w * 0.3, t.y, 5, { sp0: 60, sp1: 180, max0: 0.3, max1: 0.5, size0: 3, size1: 5, drag: 3 });
+  if (byUser && st.game?.kind === 'box') express(st, { eyes: 'wide', mouth: 'open', brows: 'up' }, 0.8);
+}
+
+/** Caught? Checked every frame, whatever it's doing (hopping, falling...). */
+function fetchCatch(st) {
+  const g = st.game;
+  const ball = st.ball;
+  const c = st.char;
+  const s = c.scale;
+  if (g.phase !== 'chase' || !ball || ball.held || ball.carried) return;
+  const cen = centerOf(c);
+  if (Math.hypot(ball.x - cen.x, ball.y - cen.y) > 30 * s + ball.r) return;
+  const air = !ball.resting && c.mode === 'air';
+  ball.carried = true;
+  g.phase = 'bring';
+  g.bringStart = st.t;
+  if (g.retrieve) {
+    g.retrieve = false;
+    return;
+  }
+  g.streak = (g.streak ?? 0) + 1;
+  const record = g.streak > (g.best ?? 0);
+  if (record) g.best = g.streak;
+  express(st, { eyes: 'happy', mouth: 'open', blush: 0.7 }, 1.2);
+  if (air) {
+    c.flipT = 0.55;
+    burst(st, 'spark', cen.x, cen.y, 8, { sp0: 60, sp1: 160, max0: 0.3, max1: 0.6, size0: 3, size1: 6, drag: 3 });
+  }
+  gameEvent(st, { type: 'catch', streak: g.streak, best: g.best, air, record });
+  if (air) say(st, pick(st, ['Got it! 🤸', 'Mid-air catch!', 'Did you see that?!']), 'happy', 2);
+  else if (record && g.streak > 2) say(st, `New record: ${g.streak} in a row! 🏆`, 'happy', 2.2);
+  else if (g.streak % 5 === 0) say(st, `${g.streak} in a row! 🎾`, 'happy', 2);
+}
+
+function chaseBall(st, world, b, input) {
+  const g = st.game;
+  const ball = st.ball;
+  const c = st.char;
+  const s = c.scale;
+  if (ball.held) {
+    g.phase = 'wait';
+    g.retrieve = false;
+    return;
+  }
+  if (st.t - g.thrownAt > 16) {
+    // Out of reach: it pops back into its hands.
+    burst(st, 'poof', ball.x, ball.y, 5, { sp0: 20, sp1: 80, max0: 0.4, max1: 0.6, size0: 10, size1: 16 });
+    ball.carried = true;
+    ball.held = false;
+    g.phase = 'bring';
+    g.bringStart = st.t;
+    if (g.retrieve) g.retrieve = false;
+    else {
+      g.streak = 0;
+      say(st, pick(st, ['Hmm, I couldn’t reach that one! 🤷', 'That one got away!', 'Too high for me!']), 'normal', 2.4);
+    }
+    return;
+  }
+  if (c.mode === 'air') {
+    // Steer in the air toward the ball (and with wings, flap up after it).
+    if (Math.abs(ball.x - c.x) > 10 * s) input[ball.x > c.x ? 'right' : 'left'] = true;
+    input.jump = true;
+    if (canFly(st) && ball.y < c.y - (CENTER_Y + 10) * s && c.vy > -200 * s && st.t - (b.data.flapAt ?? -9) > 0.18) {
+      input.jumpPressed = true;
+      b.data.flapAt = st.t;
+    }
+    return;
+  }
+  if (c.mode !== 'ground') return;
+  const span = groundSpan(world, c);
+  if (!span) return;
+  const above = ball.y + ball.r < c.y - 45 * s;
+  const below = ball.y - ball.r > c.y + 20 * s;
+  if (!ball.resting) {
+    // Flying: run to where it's going, jump if it comes down within reach.
+    walkTo(st, input, clamp(ball.x + ball.vx * 0.3, span.x1 + 20 * s, span.x2 - 20 * s), true);
+    const rise = c.y - ball.y;
+    if (ball.vy > -200 && Math.abs(ball.x - c.x) < 90 * s && rise > 70 * s && rise < jumpHeight(s) + 50 * s) {
+      input.jumpPressed = true;
+      input.jump = true;
+    }
+    return;
+  }
+  if (below && c.ground?.kind === 'platform') return goto(st, 'descend', { drop: true });
+  if (above && canFly(st) && ball.resting && ball.on && ball.on !== 'floor') return goto(st, 'fly', { pid: ball.on, x: ball.x });
+  if (above && canFly(st) && !ball.resting && ball.y < c.y - 40 * s) {
+    // Flying ball: take off after it.
+    input.jumpPressed = true;
+    input.jump = true;
+    return;
+  }
+  if (above) {
+    // Up on a window: hop or rope up to it.
+    const p = platformFor(world, ball.on, ball.x);
+    const hop = p && hopTargets(st, world).find((x) => platKey(x.p) === platKey(p));
+    if (hop) return goto(st, 'hop', { pid: platKey(hop.p), lx: hop.lx, double: hop.double, phase: 'approach' });
+    const rope = p && ropeTargets(st, world).find((x) => platKey(x.p) === platKey(p));
+    if (rope) return goto(st, 'ropeup', { pid: platKey(rope.p), ax: rope.ax, standX: rope.standX, phase: 'approach' });
+    walkTo(st, input, clamp(ball.x, span.x1 + 20 * s, span.x2 - 20 * s), false);
+    return;
+  }
+  walkTo(st, input, clamp(ball.x, span.x1 + 12 * s, span.x2 - 12 * s), Math.abs(ball.x - c.x) > 120 * s);
+}
+
+function endFetch(st, why) {
+  const g = st.game;
+  if (st.ball) burst(st, 'poof', st.ball.x, st.ball.y, 5, { sp0: 20, sp1: 80, max0: 0.4, max1: 0.6, size0: 10, size1: 16 });
+  st.ball = null;
+  st.game = null;
+  gameEvent(st, { type: 'fetch-end', best: g?.best ?? 0, why });
+  if (why === 'bored') say(st, pick(st, ['Okay, fetch break! That was fun 🎾', 'Phew! Great game! 🎾']), 'happy', 3);
+  goto(st, 'idle', { dur: 1 });
+}
+
+function endHide(st, how) {
+  const g = st.game;
+  const c = st.char;
+  const s = c.scale;
+  const took = g?.phase === 'hidden' ? st.t - g.start : 0;
+  if (c.mode === 'hidden') {
+    // Pop out of the hiding spot.
+    c.mode = 'air';
+    c.vy = -420 * s;
+    c.vx = c.facing * 140 * s;
+    const cen = centerOf(c);
+    burst(st, 'poof', cen.x, cen.y, 6, { sp0: 20, sp1: 90, max0: 0.4, max1: 0.7, size0: 12, size1: 18 });
+  }
+  st.game = null;
+  gameEvent(st, { type: 'hide-end', how, secs: Math.round(took * 10) / 10 });
+  if (how === 'found') {
+    express(st, { eyes: 'happy', mouth: 'open', blush: 0.8 }, 2);
+    say(st, pick(st, [`You found me! 🎉 (${took.toFixed(1)} s)`, `Aww, found in ${took.toFixed(1)} s! 🎉`, `Busted! 😆 ${took.toFixed(1)} s`]), 'happy', 3);
+    return goto(st, 'emote', { kind: 'celebrate', dur: 1.8 });
+  }
+  if (how === 'timeout') {
+    say(st, pick(st, ['I win! 😜 I was right here!', 'Ta-da! You didn’t find me! 😜', 'Ha! Best hiding spot ever! 😜']), 'happy', 3);
+    return goto(st, 'emote', { kind: 'laugh', dur: 1.6 });
+  }
+  if (how === 'moved') say(st, 'Hey! You moved my hiding spot! 😆', 'happy', 2.6);
+  goto(st, 'idle', { dur: 1 });
+}
+
 // ---- chatter ------------------------------------------------------------------
 
 const CHATTER = [
@@ -718,11 +1259,13 @@ function maybeChatter(st) {
 }
 
 function greeting(st) {
+  const name = st.settings.name;
+  if (!name) return 'Hi there! I’m new here… what should I be called?';
   const h = st.clock?.hour ?? 12;
-  if (h < 5) return 'Up late, huh? I’ll keep you company.';
-  if (h < 12) return 'Good morning! I’m Claude. Double-click me to chat!';
-  if (h < 18) return 'Hi! I’m Claude. Double-click me to chat!';
-  return 'Good evening! I’m Claude. Double-click me to chat!';
+  if (h < 5) return `Up late, huh? ${name} will keep you company.`;
+  if (h < 12) return `Good morning! ${name} here. Double-click me to chat!`;
+  if (h < 18) return `Hi! ${name} here. Double-click me to chat!`;
+  return `Good evening! ${name} here. Double-click me to chat!`;
 }
 
 // ---- entry points ---------------------------------------------------------------
@@ -740,9 +1283,16 @@ export function think(st, world, dt) {
   }
   if (st.control.active) return input;
   if (b.name === 'controlled') goto(st, 'idle');
+  // A mini-game takes over (celebrations and moves that help it chase are fine).
+  if (st.game) {
+    if (st.game.kind === 'fetch') fetchCatch(st);
+    if (st.game.kind === 'box') breakToys(st);
+    const ok = st.game?.kind === 'hide' ? new Set(['hide']) : st.game?.kind === 'box' ? BOX_OK : FETCH_OK;
+    if (st.game && !ok.has(b.name)) goto(st, st.game.kind);
+  }
   // Hanging on something without a plan (e.g. the player let go of the keys): climb a bit, then hop off.
   if (c.mode === 'climb' && b.name !== 'climb' && b.name !== 'wallclimb') goto(st, 'wallclimb', { phase: 'up', climbT: randRange(st, 0.3, 1), face: c.climb?.face });
-  // Music playing for a moment and Claude is just hanging around? Dance!
+  // Music playing for a moment and the character is just hanging around? Dance!
   const au = st.audio;
   if (au.music && st.settings.audio && c.mode === 'ground' && DANCE_OK.has(b.name) && st.t - (au.musicSince ?? st.t) > 1 && st.t - (b.lastDanceEnd ?? -99) > 6) {
     goto(st, 'dance');
@@ -762,17 +1312,20 @@ const REACT_FACES = {
   nod: [{ eyes: 'happy', mouth: 'smile' }, 1.3],
   sad: [{ eyes: 'normal', mouth: 'wavy', brows: 'up', blush: 0.2 }, 2.2],
   dance: [{ eyes: 'happy', mouth: 'open' }, 2.5],
+  gaze: [{ eyes: 'normal', mouth: 'o', brows: null }, 20], // eye break: peering into the distance
+  peek: [{ eyes: 'wide', mouth: 'o', brows: 'up' }, 2.6], // a notification: "ooh, what's that?"
 };
 
-/** A reaction (to a video, a joke...) played on top of whatever Claude is doing. */
-export function react(st, kind) {
+/** A reaction (to a video, a joke...) played on top of whatever the character is doing. */
+export function react(st, kind, dur) {
   const f = REACT_FACES[kind];
   if (!f) return;
-  express(st, f[0], f[1]);
-  st.anim.react = { kind, t0: st.t, dur: f[1] };
+  const d = dur ?? f[1];
+  express(st, f[0], d);
+  st.anim.react = { kind, t0: st.t, dur: d };
   const cen = centerOf(st.char);
   const s = st.char.scale;
-  if (kind === 'gasp') {
+  if (kind === 'gasp' || kind === 'peek') {
     kick(st, 0.3);
     spawn(st, 'exclaim', cen.x, cen.y - 48 * s, { vy: -30, max: 1, size: 16 });
   } else if (kind === 'wow') {
@@ -801,7 +1354,7 @@ function cursorInteractions(st, dt) {
   const cen = centerOf(c);
   const cur = st.cursor;
   const d = Math.hypot(cur.x - cen.x, cur.y - cen.y);
-  if (d < 34 * s && st.t - cur.t < 0.15 && c.mode !== 'held') {
+  if (d < 34 * s && st.t - cur.t < 0.15 && c.mode !== 'held' && c.mode !== 'hidden') {
     const dx = cur.x - b.petLastX;
     if (Math.abs(dx) > 1.5) {
       const dir = Math.sign(dx);
@@ -816,7 +1369,7 @@ function cursorInteractions(st, dt) {
     b.petScore = 2.5;
     st.stats.lastInteraction = st.t;
     if (b.name === 'sleep') {
-      // Petting a sleeping Claude keeps it asleep, just happier.
+      // Petting a sleeping character keeps it asleep, just happier.
       spawn(st, 'heart', cen.x, cen.y - 30 * s, { vy: -50, max: 1.3, size: 12, wobble: 12 });
       return;
     }
@@ -878,6 +1431,8 @@ export function onLoud(st) {
     return;
   }
   if (['dance', 'think', 'listen', 'hop', 'ropeup'].includes(b.name)) return;
+  // Watching a video: a loud moment is part of the show. Gasp, but stay seated.
+  if (b.name === 'watch') return react(st, 'gasp');
   express(st, { eyes: 'wide', mouth: 'o', brows: 'up' }, 1.2);
   const cen = centerOf(c);
   spawn(st, 'exclaim', cen.x, cen.y - 50 * c.scale, { vy: -30, max: 1, size: 18 });
@@ -895,6 +1450,10 @@ export function onEvent(st, world, e) {
     case 'jump':
       kick(st, 0.3);
       burst(st, 'dust', feetX, feetY, 4, { a0: Math.PI * 0.9, a1: Math.PI * 1.1, sp0: 30, sp1: 90, max0: 0.25, max1: 0.45, size0: 4, size1: 7, drag: 4 });
+      break;
+    case 'flap':
+      kick(st, 0.1);
+      burst(st, 'feather', feetX, feetY - 18 * s, 2, { a0: Math.PI * 0.2, a1: Math.PI * 0.8, sp0: 30, sp1: 90, max0: 0.4, max1: 0.7, size0: 3, size1: 4.5, g: 120 * s, drag: 2 });
       break;
     case 'doublejump':
       kick(st, 0.22);
@@ -1031,7 +1590,72 @@ function runCommand(st, world, cmd) {
       if (st.brain.name === 'watch') goto(st, 'emote', { kind: 'stretch', dur: 2.2 });
       return;
     case 'react':
-      return react(st, cmd.kind);
+      return react(st, cmd.kind, cmd.dur);
+    case 'work':
+      if (c.mode === 'ground' && !st.control.active) goto(st, 'work');
+      return;
+    case 'peek': {
+      // Something wants the user's attention: look at it (or down at the taskbar).
+      const tx = cmd.x ?? c.x + c.facing * 260 * s;
+      const ty = cmd.y ?? c.y + 400 * s;
+      st.anim.peekAt = { x: tx, y: ty };
+      if (Math.abs(tx - c.x) > 10 * s) c.facing = Math.sign(tx - c.x);
+      return react(st, 'peek');
+    }
+    case 'visit':
+      if (c.mode === 'ground' && !st.control.active && cmd.x != null) return goto(st, 'visit', { x: cmd.x, y: cmd.y });
+      return runCommand(st, world, { name: 'peek', x: cmd.x, y: cmd.y });
+    case 'game':
+      return startGame(st, world, cmd);
+    case 'game-end':
+      return stopGame(st, 'stopped');
+    case 'toy-hit': {
+      const t = st.toys?.find((x) => x.id === cmd.id);
+      if (t) hitToy(st, t, cmd.x ?? st.char.x, 1.15, true);
+      return;
+    }
+    case 'fly':
+      if (!canFly(st)) {
+        say(st, pick(st, ['I’d need wings for that! 🪽 (Wardrobe → Arms → Wings)', 'No wings, no flying… yet! 🪽']), 'normal', 2.8);
+        return goto(st, 'emote', { kind: 'shrug', dur: EMOTE_DUR.shrug });
+      }
+      if (c.mode !== 'ground') return;
+      return startFlight(st, world);
+    case 'found':
+      if (st.game?.kind === 'hide' && st.game.phase === 'hidden') endHide(st, 'found');
+      return;
+    case 'hide-rect': {
+      // The window it's hiding behind moved (or went away).
+      const g = st.game;
+      if (g?.kind !== 'hide') return;
+      if (cmd.gone) return g.phase === 'hidden' ? endHide(st, 'moved') : undefined;
+      g.spot.x += cmd.dx;
+      g.spot.y += cmd.dy;
+      if (cmd.rect) g.clip = cmd.rect;
+      if (c.mode === 'hidden') {
+        c.x += cmd.dx;
+        c.y += cmd.dy;
+      }
+      return;
+    }
+    case 'hide-move': {
+      // Something got put on top of its spot: sneak off to a new one (no poof, that'd give it away).
+      const g = st.game;
+      if (g?.kind !== 'hide' || !cmd.spot) return;
+      g.spot = { ...cmd.spot };
+      g.clip = cmd.spot.clip ?? null;
+      if (c.mode === 'hidden') {
+        c.x = cmd.spot.x;
+        c.y = cmd.spot.y;
+        c.facing = cmd.spot.face;
+      }
+      return;
+    }
+    case 'routine': {
+      const steps = (cmd.steps ?? []).filter((k) => EMOTE_DUR[k]);
+      if (steps.length && !st.control.active) goto(st, 'emote', { kind: steps[0], dur: EMOTE_DUR[steps[0]], queue: steps.slice(1) });
+      return;
+    }
     case 'climb': {
       let targets = climbTargets(st, world);
       if (cmd.win) {

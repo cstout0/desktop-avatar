@@ -1,12 +1,12 @@
 // One transparent, click-through, always-on-top window per monitor. Tracks which
-// one is the "brain" (runs Claude's simulation) and relays hand-offs, snapshots
+// one is the "brain" (runs the character's simulation) and relays hand-offs, snapshots
 // and input between them.
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import * as w32 from './win32.js';
 
-const BOUNCE = new Set(['ov:say', 'ov:do', 'ov:key', 'ov:control', 'ov:hide-bubble']);
+const BOUNCE = new Set(['ov:say', 'ov:do', 'ov:key', 'ov:control', 'ov:hide-bubble', 'ov:speaking', 'ov:focus']);
 
 export class OverlayManager extends EventEmitter {
   constructor({ root, settings, harness }) {
@@ -73,7 +73,7 @@ export class OverlayManager extends EventEmitter {
       roundedCorners: false,
       show: false,
       focusable: true,
-      title: 'Claude overlay',
+      title: 'Desktop Avatar overlay',
       webPreferences: {
         preload: path.join(this.root, 'src/preload/overlay.cjs'),
         backgroundThrottling: false,
@@ -237,6 +237,14 @@ export class OverlayManager extends EventEmitter {
       this.emit('context-menu', e?.win, p);
     });
     ipcMain.on('ov:bubble-action', (_ev, id) => this.emit('bubble-action', id));
+    ipcMain.on('ov:game', (ev, e) => {
+      const [id] = this.entryFor(ev.sender);
+      if (id === this.brainId && e && typeof e === 'object') this.emit('game', e);
+    });
+    ipcMain.on('ov:said', (ev, text) => {
+      const [id] = this.entryFor(ev.sender);
+      if (id === this.brainId && typeof text === 'string') this.emit('said', text.slice(0, 300));
+    });
     ipcMain.on('ov:report', (ev, r) => {
       const [id] = this.entryFor(ev.sender);
       if (id !== this.brainId) return;

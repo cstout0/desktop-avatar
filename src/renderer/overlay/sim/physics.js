@@ -41,6 +41,9 @@ export function newChar(x, y, scale) {
   };
 }
 
+/** Wings let it fly (flap in the air, glide when falling). */
+export const canFly = (st) => st.look?.arms === 'wings';
+
 export function centerOf(c) {
   return { x: c.x, y: c.y - CENTER_Y * c.scale };
 }
@@ -64,7 +67,11 @@ export function stepCharacter(st, world, input, dt) {
   c.dropT = Math.max(0, c.dropT - dt);
   c.flipT = Math.max(0, c.flipT - dt);
   c.climbCD = Math.max(0, (c.climbCD ?? 0) - dt);
+  c.flapCD = Math.max(0, (c.flapCD ?? 0) - dt);
+  // A rope only stays attached while hanging from it (safety net for any path that forgets).
+  if (c.rope.state === 'attached' && c.mode !== 'rope') c.rope.state = 'retracting';
   stepRopeVisual(st, dt);
+  if (c.mode === 'hidden') return; // hide and seek: frozen in its hiding spot
   if (c.mode === 'held') return stepHeld(st, world, dt);
   if (c.mode === 'rope') return stepRope(st, world, input, dt);
   if (c.mode === 'climb') return stepClimb(st, world, input, dt);
@@ -135,6 +142,15 @@ function stepPlatformer(st, world, input, dt) {
       c.jumpCutDone = false;
       emit(st, 'walljump', { side: c.wallDir });
       c.wallDir = 0;
+    } else if (canFly(st) && !c.tumble) {
+      if (c.flapCD <= 0) {
+        // Flap! As many times as it likes (a little cooldown so holding the key isn't a rocket).
+        c.vy = Math.min(c.vy, -P.flapVel * s);
+        c.flapCD = P.flapCD;
+        c.jumpBufT = 0;
+        c.jumpCutDone = false;
+        emit(st, 'flap');
+      }
     } else if (c.jumpsLeft > 0 && !c.tumble) {
       c.vy = -P.doubleJumpVel * s;
       c.jumpsLeft--;
@@ -155,6 +171,7 @@ function stepPlatformer(st, world, input, dt) {
     c.vy += P.gravity * s * dt;
     if (c.wallDir !== 0 && dir === c.wallDir && c.vy > 0) c.vy = Math.min(c.vy, P.wallSlideMax * s);
     c.vy = Math.min(c.vy, P.maxFall * s);
+    if (canFly(st) && input.jump && c.vy > 0 && !c.tumble) c.vy = Math.min(c.vy, P.glideMax * s); // gliding
     c.airT += dt;
     c.rot += c.rotV * dt;
     c.rotV *= Math.exp(-0.5 * dt);
@@ -501,7 +518,7 @@ export function fireRope(st, world, tx, ty) {
     tx = hand.x + (dx / d) * max;
     ty = hand.y + (dy / d) * max;
   }
-  // Anchor on a window edge? Then reeling in all the way vaults Claude onto it.
+  // Anchor on a window edge? Then reeling in all the way vaults the character onto it.
   let platformId = null;
   for (const p of world.platforms) {
     if (Math.abs(ty - p.y) <= 14 * s && tx >= p.x1 - 6 && tx <= p.x2 + 6) {
@@ -650,9 +667,10 @@ export function releaseRope(st, boost) {
   emit(st, 'rope-release');
 }
 
-/** Moving platform support: carry Claude along when the window it stands on moves. */
+/** Moving platform support: carry the character along when the window it stands on moves. */
 export function carryWithPlatforms(st, oldWorld, newWorld) {
   const c = st.char;
+  if (c.mode === 'hidden') return; // the hiding spot follows its window separately
   if (c.mode === 'climb' && c.climb && !c.climb.wall) {
     // Hanging on a window's side while it gets dragged around: hold on.
     const hand = handOffset(c.scale);

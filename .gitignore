@@ -9,3 +9,4 @@ vendor/
 *.log
 Thumbs.db
 desktop.ini
+dist/

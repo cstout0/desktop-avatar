@@ -46,7 +46,7 @@ export function floorY(r) {
   return r.y + r.h - (r.inset ?? 0);
 }
 
-/** Platforms are pieces of a window's top edge; Claude tracks the window. */
+/** Platforms are pieces of a window's top edge; the character tracks the window. */
 export const platKey = (p) => p.win ?? p.id;
 
 /** The piece of window `key`'s top edge nearest to x (any piece if x is null). */

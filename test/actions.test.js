@@ -8,11 +8,12 @@ import { Actions } from '../src/main/commands/actions.js';
 import { Timers } from '../src/main/commands/timers.js';
 import { parse } from '../src/main/commands/parser.js';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-actions-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-actions-'));
 let calls;
 let actions;
 let folders;
 let timers;
+let charName;
 
 function setup() {
   fs.rmSync(root, { recursive: true, force: true });
@@ -46,8 +47,13 @@ function setup() {
     timers,
     dataDir: path.join(root, 'appdata'),
     screenshot: async () => calls.push(['screenshot']),
+    getName: () => charName,
+    setName: (n) => {
+      charName = n;
+    },
     rand: () => 0,
   });
+  charName = 'Pixel';
 }
 
 beforeEach(setup);
@@ -57,12 +63,12 @@ after(() => {
 });
 
 const run = (text) => {
-  const p = parse(text);
+  const p = parse(text, { names: [charName] });
   return actions[p.intent](p);
 };
 
-test('the user\u2019s example: "Claude, create a folder named Test Folder"', () => {
-  const r = run('Claude, create a folder named Test Folder');
+test('the user\u2019s example: "Pixel, create a folder named Test Folder"', () => {
+  const r = run('Pixel, create a folder named Test Folder');
   assert.equal(r.ok, true);
   assert.ok(fs.statSync(path.join(folders.desktop, 'Test Folder')).isDirectory());
   assert.match(r.say, /Test Folder/);
@@ -111,7 +117,7 @@ test('missing names trigger a follow-up question', () => {
 test('notes, memory', () => {
   run('take a note: call mom');
   run('note that the wifi password is on the router');
-  const notes = fs.readFileSync(path.join(folders.documents, 'Claude Notes.txt'), 'utf8');
+  const notes = fs.readFileSync(path.join(folders.documents, 'Desktop Avatar Notes.txt'), 'utf8');
   assert.match(notes, /call mom/);
   assert.match(notes, /wifi password/);
   assert.match(run('read my notes').say, /call mom/);
@@ -166,6 +172,34 @@ test('timers and reminders are scheduled', () => {
   assert.equal(list.length, 2);
   assert.equal(list[1].label, 'check the oven');
   assert.match(run('cancel my timers').say, /Cancelled 2/);
+});
+
+test('renaming the character (and it then answers to the new name)', () => {
+  const r = run('your name is bolt');
+  assert.equal(r.ok, true);
+  assert.equal(charName, 'Bolt', 'cleaned up and saved');
+  assert.match(r.say, /Bolt/);
+  assert.match(r.say, /Pixel/, 'says goodbye to the old name');
+  assert.equal(r.emote, 'celebrate');
+  assert.match(run('Bolt, what are you').say, /I’m Bolt/);
+  assert.match(run('call yourself Bolt').say, /already my name/);
+  assert.equal(run('change your name to 🎉').ask?.slot, 'name', 'asks again when nothing usable is left');
+});
+
+test('a rename suggested by the AI waits for a yes', async () => {
+  const r = actions.rename_self({ name: 'Nova', confirm: true });
+  assert.match(r.confirm.question, /Nova/);
+  assert.equal(charName, 'Pixel', 'nothing changed yet');
+  const done = await r.confirm.yes();
+  assert.equal(done.ok, true);
+  assert.equal(charName, 'Nova');
+});
+
+test('who() before and after the character has a name', () => {
+  charName = '';
+  assert.match(actions.who().say, /don’t have a name yet/);
+  charName = 'Pixel';
+  assert.match(actions.who().say, /^I’m Pixel/);
 });
 
 test('media keys, emotes, info', async () => {

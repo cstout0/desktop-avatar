@@ -15,8 +15,8 @@ async function waitFor(fn, { timeout = 4000, every = 60, label = 'condition' } =
   throw new Error(`timed out waiting for ${label} (last=${JSON.stringify(last)})`);
 }
 
-const J = (js) => evalIn(`(() => { const C = window.__claude; const st = C.st; ${js} })()`);
-const JA = (js) => evalIn(`(async () => { const C = window.__claude; const st = C.st; const sleep = (ms) => new Promise(r => setTimeout(r, ms)); ${js} })()`);
+const J = (js) => evalIn(`(() => { const C = window.__avatar; const st = C.st; ${js} })()`);
+const JA = (js) => evalIn(`(async () => { const C = window.__avatar; const st = C.st; const sleep = (ms) => new Promise(r => setTimeout(r, ms)); ${js} })()`);
 const charState = () => J(`const c = st.char; return { x: c.x, y: c.y, vx: c.vx, vy: c.vy, mode: c.mode, ground: c.ground, rope: c.rope.state, control: st.control.active, brain: st.brain.name, face: (st.anim.tempFace && st.t < st.anim.faceUntil ? st.anim.tempFace : st.anim.face).eyes };`);
 
 async function brainInfo() {
@@ -47,19 +47,25 @@ const tests = {
     throw new Error('overlay did not toggle click-through on hover');
   },
 
-  async pokeMakesClaudeReact() {
+  async pokeMakesItReact() {
     await releaseControl();
-    const r = await JA(`
-      const c = C.centerOf(st.char); const a = C.info.area;
-      const o = { clientX: c.x - a.x, clientY: c.y - a.y, button: 0 };
-      window.dispatchEvent(new MouseEvent('mousemove', o));
-      window.dispatchEvent(new MouseEvent('mousedown', o));
-      await sleep(40);
-      window.dispatchEvent(new MouseEvent('mouseup', o));
-      await sleep(30);
-      const f = st.anim.tempFace && st.t < st.anim.faceUntil ? st.anim.tempFace : null;
-      return { face: f?.eyes, pokes: st.brain.pokes, mode: st.char.mode };`);
-    assert.equal(r.mode !== 'held', true, 'a quick click must not pick Claude up');
+    let r;
+    // A real mouse move during the click turns it into a drag, so retry a few times.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      r = await JA(`
+        const c = C.centerOf(st.char); const a = C.info.area;
+        const o = { clientX: c.x - a.x, clientY: c.y - a.y, button: 0 };
+        window.dispatchEvent(new MouseEvent('mousemove', o));
+        window.dispatchEvent(new MouseEvent('mousedown', o));
+        await sleep(40);
+        window.dispatchEvent(new MouseEvent('mouseup', o));
+        await sleep(30);
+        const f = st.anim.tempFace && st.t < st.anim.faceUntil ? st.anim.tempFace : null;
+        return { face: f?.eyes, pokes: st.brain.pokes, mode: st.char.mode };`);
+      if (r.pokes >= 1) break;
+      await sleep(1500);
+    }
+    assert.equal(r.mode !== 'held', true, 'a quick click must not pick it up');
     assert.ok(r.pokes >= 1, 'poke registered');
     assert.ok(['happy', 'wide', 'squint'].includes(r.face), `reaction face shown (${r.face})`);
     return r;
@@ -67,6 +73,9 @@ const tests = {
 
   async dragAndThrow() {
     await releaseControl();
+    // Start on the floor mid-screen, so the lift doesn't hit the top of the screen.
+    await J(`const a = C.info.area; st.char.x = a.x + a.w / 2; st.char.y = a.y + a.h - 3; st.char.vx = 0; st.char.vy = 0; st.char.mode = 'ground'; st.char.ground = { kind: 'floor' }; return true;`);
+    await sleep(300);
     const r = await JA(`
       const a = C.info.area;
       const c0 = C.centerOf(st.char);
@@ -83,8 +92,8 @@ const tests = {
       window.dispatchEvent(new MouseEvent('mouseup', at(x, y)));
       await sleep(20);
       return { heldMode: modes[0], lifted: c0.y - (liftedY - 49), after: st.char.mode, vx: st.char.vx, vy: st.char.vy, tumble: st.char.tumble };`);
-    assert.equal(r.heldMode, 'held', 'dragging picks Claude up');
-    assert.equal(r.after, 'air', 'released Claude flies');
+    assert.equal(r.heldMode, 'held', 'dragging picks it up');
+    assert.equal(r.after, 'air', 'once released, it flies');
     assert.ok(Math.abs(r.vx) > 800, `thrown with speed (vx=${Math.round(r.vx)})`);
     const landed = await waitFor(async () => {
       const s = await charState();
@@ -94,13 +103,25 @@ const tests = {
   },
 
   async keyboardControl() {
-    await takeControl();
-    const s0 = await charState();
-    assert.equal(s0.control, true);
-    await J(`C.handleKey({ code: 'ArrowLeft', down: true }); return true;`);
-    await sleep(600);
-    const s1 = await charState();
-    await J(`C.handleKey({ code: 'ArrowLeft', down: false }); return true;`);
+    // Let it stop sliding first (e.g. from being thrown).
+    await waitFor(async () => {
+      const s = await charState();
+      return s.mode === 'ground' && Math.abs(s.vx) < 5;
+    }, { timeout: 8000, label: 'standing still' });
+    let s0;
+    let s1;
+    // Clicking another window (a person using the PC) ends keyboard control; retry then.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await takeControl();
+      s0 = await charState();
+      assert.equal(s0.control, true);
+      await J(`C.handleKey({ code: 'ArrowLeft', down: true }); return true;`);
+      await sleep(600);
+      s1 = await charState();
+      await J(`C.handleKey({ code: 'ArrowLeft', down: false }); return true;`);
+      if (s1.control) break;
+      await sleep(500);
+    }
     assert.ok(s1.x < s0.x - 40, `moved left (${Math.round(s0.x)} -> ${Math.round(s1.x)})`);
     await sleep(300);
     await J(`C.handleKey({ code: 'Space', down: true }); return true;`);
@@ -145,7 +166,7 @@ const tests = {
     const region = st.displays.find((d) => (p.x1 + p.x2) / 2 >= d.workArea.x && (p.x1 + p.x2) / 2 < d.workArea.x + d.workArea.width);
     const brain = await brainInfo();
     if (region.id !== brain.id) {
-      // Put Claude on that monitor first (via a hand-off) by teleporting across the seam.
+      // Put the character on that monitor first (via a hand-off) by teleporting across the seam.
       await takeControl();
       await J(`st.char.x = ${(p.x1 + p.x2) / 2}; st.char.y = ${p.y - 30}; st.char.vx = 0; st.char.vy = 0; st.char.mode = 'air'; st.char.ground = null; return true;`);
       await waitFor(async () => (await brainInfo()).id === region.id, { label: 'hand-off to the window monitor' });
@@ -169,7 +190,7 @@ const tests = {
     const [left, right] = [...st.displays].sort((a, b) => a.bounds.x - b.bounds.x);
     const seam = right.bounds.x;
     await takeControl();
-    // Walk Claude to the seam on the left monitor.
+    // Walk the character to the seam on the left monitor.
     const b0 = await brainInfo();
     if (b0.id !== left.id) {
       await J(`st.char.x = ${seam + 300}; st.char.y = ${right.workArea.y + right.workArea.height - 3}; st.char.vx = 0; st.char.mode = 'ground'; st.char.ground = { kind: 'floor' }; return true;`);
@@ -182,7 +203,7 @@ const tests = {
     await J(`st.char.x = ${seam - 12}; st.char.vx = 0; st.char.y = ${left.workArea.y + left.workArea.height - 3}; st.char.mode = 'ground'; st.char.ground = { kind: 'floor' }; return true;`);
     await sleep(250);
     const ghost = await evalIn(`(() => { const c = document.getElementById('char'); const x = c.getContext('2d'); const m = new DOMMatrix(getComputedStyle(c).transform); return { tx: m.m41, ty: m.m42, drew: x.getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v > 0) }; })()`, right.id);
-    assert.ok(ghost.drew, 'right monitor draws the half of Claude that sticks over the bezel');
+    assert.ok(ghost.drew, 'right monitor draws the half of the character that sticks over the bezel');
     // Now walk right: the simulation should hand off to the right monitor.
     await J(`C.handleKey({ code: 'ArrowRight', down: true }); return true;`);
     const after = await waitFor(async () => {
@@ -207,8 +228,8 @@ const tests = {
       return !was.visible && now.id === other.id ? { hiddenOverlay: b.id, brainNow: now.id } : null;
     }, { timeout: 5000, label: 'evacuation to the other monitor' });
     const s = await charState();
-    assert.ok(s.x >= other.workArea.x && s.x <= other.workArea.x + other.workArea.width, 'Claude is on the free monitor');
-    // Claude must not wander back onto the fullscreen monitor.
+    assert.ok(s.x >= other.workArea.x && s.x <= other.workArea.x + other.workArea.width, 'the character is on the free monitor');
+    // It must not wander back onto the fullscreen monitor.
     await takeControl();
     const towards = b.id === st.displays.sort((p, q) => p.bounds.x - q.bounds.x)[0].id ? 'ArrowLeft' : 'ArrowRight';
     await J(`C.handleKey({ code: '${towards}', down: true, repeat: false }); return true;`);

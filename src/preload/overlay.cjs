@@ -17,6 +17,8 @@ const SEND = new Set([
   'bubble-action',
   'report',
   'bounce',
+  'said',
+  'game',
 ]);
 const RECV = new Set([
   'world',
@@ -33,6 +35,8 @@ const RECV = new Set([
   'control',
   'audio',
   'settings',
+  'speaking',
+  'focus',
 ]);
 const INVOKE = new Set(['ready']);
 

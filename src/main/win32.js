@@ -43,10 +43,30 @@ const keybd_event = user32.func('void __stdcall keybd_event(uint8_t vk, uint8_t 
 const DwmGetWindowAttributeRect = dwmapi.func('long __stdcall DwmGetWindowAttribute(HWND hwnd, uint32_t attr, _Out_ RECT *value, uint32_t size)');
 const DwmGetWindowAttributeU32 = dwmapi.func('long __stdcall DwmGetWindowAttribute(HWND hwnd, uint32_t attr, _Out_ uint32_t *value, uint32_t size)');
 const SHQueryUserNotificationState = shell32.func('long __stdcall SHQueryUserNotificationState(_Out_ int *state)');
+const RegisterWindowMessageW = user32.func('uint32_t __stdcall RegisterWindowMessageW(const char16_t *name)');
+const RegisterShellHookWindow = user32.func('bool __stdcall RegisterShellHookWindow(HWND hwnd)');
+const ShowWindow = user32.func('bool __stdcall ShowWindow(HWND hwnd, int cmd)');
+const SetForegroundWindow = user32.func('bool __stdcall SetForegroundWindow(HWND hwnd)');
 const OpenProcess = kernel32.func('HANDLE __stdcall OpenProcess(uint32_t access, bool inherit, uint32_t pid)');
 const CloseHandle = kernel32.func('bool __stdcall CloseHandle(HANDLE h)');
 const QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(HANDLE h, uint32_t flags, _Out_ char16_t *buf, _Inout_ uint32_t *size)');
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const PROCESSENTRY32W = koffi.struct('PROCESSENTRY32W', {
+  dwSize: 'uint32_t',
+  cntUsage: 'uint32_t',
+  th32ProcessID: 'uint32_t',
+  th32DefaultHeapID: 'uintptr_t',
+  th32ModuleID: 'uint32_t',
+  cntThreads: 'uint32_t',
+  th32ParentProcessID: 'uint32_t',
+  pcPriClassBase: 'int32_t',
+  dwFlags: 'uint32_t',
+  szExeFile: koffi.array('char16_t', 260, 'String'),
+});
+const CreateToolhelp32Snapshot = kernel32.func('HANDLE __stdcall CreateToolhelp32Snapshot(uint32_t flags, uint32_t pid)');
+const Process32FirstW = kernel32.func('bool __stdcall Process32FirstW(HANDLE snap, _Inout_ PROCESSENTRY32W *entry)');
+const Process32NextW = kernel32.func('bool __stdcall Process32NextW(HANDLE snap, _Inout_ PROCESSENTRY32W *entry)');
+const TH32CS_SNAPPROCESS = 0x2;
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -221,6 +241,52 @@ export function processName(pid) {
   if (procNames.size > 500) procNames.clear();
   procNames.set(pid, name);
   return name;
+}
+
+/** Every running process: [{ pid, ppid, name: "Discord.exe" }] (a few ms). */
+export function processList() {
+  const snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  const addr = snap ? BigInt(koffi.address(snap)) : 0n;
+  if (!addr || addr === 0xffffffffffffffffn || addr === -1n) return [];
+  const out = [];
+  try {
+    const size = koffi.sizeof(PROCESSENTRY32W);
+    const e = { dwSize: size };
+    let ok = Process32FirstW(snap, e);
+    while (ok) {
+      out.push({ pid: e.th32ProcessID, ppid: e.th32ParentProcessID, name: e.szExeFile });
+      e.dwSize = size;
+      ok = Process32NextW(snap, e);
+    }
+  } finally {
+    CloseHandle(snap);
+  }
+  return out;
+}
+
+/** Title, pid and process name of any window (null if it's gone). */
+export function windowInfo(hwnd) {
+  if (!IsWindow(hwnd)) return null;
+  const pid = pidOf(hwnd);
+  return { hwnd, pid, title: readText(GetWindowTextW, hwnd), process: processName(pid), minimized: IsIconic(hwnd) };
+}
+
+/**
+ * Ask Windows to tell `hwnd` about shell events (a taskbar button flashing,
+ * windows opening...). Returns the message id to hook, or 0.
+ */
+export function registerShellHook(hwnd) {
+  const msg = RegisterWindowMessageW('SHELLHOOK');
+  return msg && RegisterShellHookWindow(hwnd) ? msg : 0;
+}
+
+export const HSHELL_FLASH = 0x8006;
+
+/** Restore and bring a window to the front (works right after the user clicked us). */
+export function bringToFront(hwnd) {
+  if (!IsWindow(hwnd)) return false;
+  if (IsIconic(hwnd)) ShowWindow(hwnd, 9); // SW_RESTORE
+  return SetForegroundWindow(hwnd);
 }
 
 export function cursorPos() {

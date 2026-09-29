@@ -1,17 +1,43 @@
 // Rule-based understanding of common requests. Pure (no I/O), fast, and works
 // with no AI model at all. Anything it isn't sure about goes to the local LLM.
 
-const WAKE = /^\s*(?:(?:hey|hi|hello|ok|okay|yo|oi|dear)\s+)?cl(?:au|ou|aw)de?\b[\s,:;!.\-]*/i;
+import { resolveStyle } from './restyle.js';
+
+const GREETING = '(?:hey|hi|hello|ok|okay|yo|oi|dear)';
 const POLITE_PREFIX =
   /^(?:(?:please|pls|plz|kindly)\s+|(?:can|could|would|will|wanna)\s+you\s+(?:please\s+)?|(?:would|could)\s+you\s+mind\s+|i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+|i'?d\s+like\s+(?:you\s+)?to\s+|go\s+ahead\s+and\s+|quickly\s+|just\s+)/i;
 const POLITE_SUFFIX = /[\s,]*(?:please|pls|plz|for\s+me|thanks|thank\s+you|thx|real\s+quick|if\s+you\s+can|if\s+you\s+could)[\s.!?]*$/i;
 
-export function normalize(text) {
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Remove the character's name used as a wake word: "Pixel, open notepad",
+ * "hey Pixel open notepad". A bare "Pixel open notepad" (no comma), or just
+ * "Pixel", is only stripped when `bare` is set, so a buddy named "Dance" can
+ * still be told "dance".
+ */
+function stripName(s, names, bare) {
+  for (const n of names) {
+    const name = String(n ?? '').trim();
+    if (!name) continue;
+    const pat = escapeRe(name).replace(/\s+/g, '\\s+');
+    const re = new RegExp(`^\\s*(?:${GREETING}\\s+${pat}(?![\\p{L}\\p{N}])[\\s,:;!.?\\-]*|${pat}\\s*[,:;!.?\\-]+\\s*${bare ? `|${pat}(?:\\s+|$)` : ''})`, 'iu');
+    const out = s.replace(re, '');
+    if (out !== s) return out;
+  }
+  return s;
+}
+
+/**
+ * @param opts.names  the character's name(s), stripped when used as a wake word
+ * @param opts.bare   also strip the name when no comma follows it
+ */
+export function normalize(text, { names = [], bare = true } = {}) {
   let s = String(text ?? '')
     .replace(/[\u201c\u201d]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
     .trim();
-  s = s.replace(WAKE, '');
+  s = stripName(s, names, bare);
   for (let i = 0; i < 4; i++) {
     const next = s.replace(POLITE_PREFIX, '').replace(POLITE_SUFFIX, '').trim();
     if (next === s || !next.replace(/[?.!\s]+/g, '')) break; // keep "thanks!" when it's all there is
@@ -174,6 +200,7 @@ const RULES = [
       [/^(?:climb|climb\s+up|go\s+climb(?:ing)?|climb\s+something|climb\s+(?:up\s+)?(?:the\s+side\s+of\s+)?(?:a\s+|the\s+|that\s+|this\s+|my\s+)?window)$/, 'climb'],
       [/^(?:climb\s+(?:up\s+)?(?:the\s+)?(?:wall|side\s+of\s+the\s+screen|screen(?:\s+edge)?))$/, 'wallclimb'],
       [/^(?:explore|go\s+explore|go\s+exploring|(?:jump|hop|get)\s+(?:up\s+)?on(?:to)?\s+(?:a|the|that|my)\s+window|go\s+(?:up\s+)?on\s+top\s+of\s+(?:a|the)\s+window)$/, 'explore'],
+      [/^(?:fly|fly\s+(?:around|away|up|somewhere|up\s+there|for\s+me)|go\s+fly(?:ing)?|take\s+off|spread\s+your\s+wings)$/, 'fly'],
     ];
     for (const [re, name] of table) if (re.test(t)) return { intent: 'emote', name };
     // "climb (up) the spotify window" -> climb that specific app's window
@@ -182,6 +209,62 @@ const RULES = [
     const other = t.match(/^(?:go|move|run|walk)\s+(?:over\s+)?to\s+(?:the\s+)?(?<which>other|left|right|first|second|main|primary)\s+(?:screen|monitor|display)$/);
     if (other) return { intent: 'emote', name: 'other-screen', which: other.groups.which };
     if (/^(?:hide|go\s+away|disappear|leave\s+me\s+alone|shoo)$/.test(t)) return { intent: 'hide' };
+    return null;
+  },
+
+  // Mini-games.
+  (s) => {
+    const t = s.toLowerCase().replace(/[!.]+$/, '');
+    if (/^(?:(?:let'?s|wanna|want\s+to|do\s+you\s+want\s+to)\s+)?(?:play\s+)?fetch$|^(?:(?:let'?s|wanna)\s+)?play\s+(?:ball|catch)$|^(?:throw|get)\s+(?:me\s+)?(?:the|a)\s+ball$/.test(t)) return { intent: 'play', game: 'fetch' };
+    if (/^(?:(?:let'?s|wanna|want\s+to|do\s+you\s+want\s+to)\s+)?(?:play\s+)?hide\s*(?:and|&|n'?)\s*(?:go\s+)?seek$|^(?:go\s+)?hide\s+from\s+me$/.test(t)) return { intent: 'play', game: 'hide' };
+    if (/^(?:(?:let'?s|wanna|want\s+to|do\s+you\s+want\s+to)\s+)?(?:play\s+)?(?:box|boxing)$|^(?:punch|box|beat\s+up|fight)\s+(?:some\s+|the\s+)?(?:windows|pop-?ups|popups|ads)$/.test(t)) return { intent: 'play', game: 'boxing' };
+    if (/^(?:stop|end|quit|finish)\s+(?:the\s+)?(?:game|playing|fetch|hide\s*(?:and|&)\s*seek)$|^game\s+over$|^i\s+give\s+up$/.test(t)) return { intent: 'stop_game' };
+    return null;
+  },
+
+  // Focus buddy (pomodoro).
+  (s) => {
+    const t = s.toLowerCase();
+    let m = t.match(/^(?:(?:start|begin|do)\s+(?:a\s+|the\s+)?(?:focus(?:\s+session)?|pomodoro|work\s+session)|focus\s+mode|pomodoro|let'?s\s+focus|help\s+me\s+(?:focus|concentrate)|time\s+to\s+(?:focus|work))(?:\s+(?:for|of)\s+(?<dur>.+))?$/);
+    if (m) {
+      const secs = m.groups.dur ? parseDuration(m.groups.dur) : null;
+      return { intent: 'focus_start', minutes: secs ? Math.max(1, Math.round(secs / 60)) : null };
+    }
+    m = t.match(/^focus\s+(?:for\s+)?(?<dur>.+)$/);
+    if (m && parseDuration(m.groups.dur)) return { intent: 'focus_start', minutes: Math.max(1, Math.round(parseDuration(m.groups.dur) / 60)) };
+    if (/^(?:stop|end|cancel|quit)\s+(?:the\s+|my\s+)?(?:focus(?:\s+(?:session|mode|timer))?|pomodoro)$/.test(t)) return { intent: 'focus_stop' };
+    if (/^(?:pause)\s+(?:the\s+|my\s+)?(?:focus(?:\s+(?:session|timer))?|pomodoro)$/.test(t)) return { intent: 'focus_pause' };
+    if (/^(?:resume|continue|unpause)\s+(?:the\s+|my\s+)?(?:focus(?:\s+(?:session|timer))?|pomodoro)$/.test(t)) return { intent: 'focus_resume' };
+    if (/^(?:take\s+a\s+break|break\s+time|time\s+for\s+a\s+break|i\s+need\s+a\s+break)$/.test(t)) return { intent: 'focus_break' };
+    return null;
+  },
+
+  // Its own shape and moves: "turn into a ghost", "walk like a penguin", "leave a trail of hearts".
+  // Only words it knows are handled here; anything else goes to the AI.
+  (s) => {
+    const t = s.toLowerCase().replace(/[.!?]+$/, '').trim();
+    const known = (kind, word, extra = {}) => (resolveStyle(kind, word) ? { intent: 'restyle', [kind]: word, ...extra } : null);
+    let m = t.match(/^(?:turn|change|morph|transform|shapeshift)\s+(?:yourself\s+|your\s+body\s+)?(?:into|to)\s+(?<x>.+)$/);
+    if (m) return known('body', m.groups.x);
+    m = t.match(/^(?:become|be)\s+(?:a|an)\s+(?<x>.+)$/);
+    if (m) return known('body', m.groups.x);
+    m = t.match(/^(?:walk|move|go\s+around)\s+like\s+(?<x>.+)$/);
+    if (m) return known('gait', m.groups.x);
+    m = t.match(/^(?<x>hop|bounce|roll|float|waddle|strut|tiptoe|sneak)\s+(?:around|everywhere|about)$/);
+    if (m) return known('gait', m.groups.x);
+    if (/^(?:no|stop\s+(?:the|your|leaving\s+(?:a|the))|turn\s+off\s+(?:the|your))\s+trail$/.test(t)) return { intent: 'restyle', trail: 'none' };
+    m = t.match(/^(?:leave|make|draw|use)\s+(?:a\s+)?trail\s+of\s+(?<x>.+)$/) || t.match(/^(?:(?:leave|make|use|do)\s+)?(?:a\s+)?(?<x>\w+)\s+trail$/);
+    if (m) return known('trail', m.groups.x);
+    m = t.match(/^(?:give\s+yourself|grow|put\s+on|wear|get)\s+(?:some\s+|a\s+pair\s+of\s+|little\s+)?(?<x>wings|gloves|paws|sneakers|boots)$/);
+    if (m) return { intent: 'restyle', ...{ wings: { arms: 'wings' }, gloves: { arms: 'gloves' }, paws: { arms: 'paws', legs: 'paws' }, sneakers: { legs: 'sneakers' }, boots: { legs: 'boots' } }[m.groups.x] };
+    return null;
+  },
+
+  // The character's own settings window ("open your settings", "change your outfit").
+  (s) => {
+    const t = s.toLowerCase();
+    if (/^(?:(?:change|customize|pick|choose|switch)\s+(?:up\s+)?your\s+(?:look|outfit|clothes|hat|colou?r|style)|(?:let'?s\s+(?:play\s+)?)?dress\s+up|(?:open\s+|show\s+(?:me\s+)?)?your\s+(?:wardrobe|closet))$/.test(t)) return { intent: 'settings', section: 'wardrobe' };
+    if (/^(?:open\s+|show\s+(?:me\s+)?)?your\s+(?:settings|options|preferences|room)$/.test(t)) return { intent: 'settings', section: null };
     return null;
   },
 
@@ -236,9 +319,14 @@ const RULES = [
     return { intent: 'create_file', name, ext, location, content, alt, ...(name ? {} : { missing: 'name' }) };
   },
 
-  // Notes & memory
+  // Notes & memory (and the character's own name)
   (s) => {
-    let m = s.match(/^(?:take|make|write|jot(?:\s+down)?|add|leave)\s+(?:a\s+|me\s+a\s+)?(?:quick\s+)?note(?:\s+(?:that|saying|to\s+say|:)|\s*:)?\s+(?<t>.+)$/i) || s.match(/^(?:note(?:\s+down)?|jot\s+down|write\s+down)\s*(?:that|:)?\s+(?<t>.+)$/i);
+    let m = s.match(
+      /^(?:your\s+(?:new\s+)?name\s+(?:is|will\s+be|should\s+be|is\s+now)|i(?:'ll|\s+will|'m\s+(?:going\s+to|gonna)|\s+want\s+to|\s+wanna)\s+(?:call|name)\s+you|let'?s\s+(?:call|name)\s+you|(?:call|name)\s+yourself|change\s+your\s+name\s+to|rename\s+yourself(?:\s+to)?|you(?:'re|\s+are)\s+(?:now\s+)?(?:called|named)|from\s+now\s+on,?\s+(?:you(?:'re|\s+are)(?:\s+called)?|your\s+name\s+is)|you\s+shall\s+be\s+(?:called|named|known\s+as)|go\s+by)\s+(?<n>.+)$/i,
+    );
+    if (m) return { intent: 'rename_self', name: unquote(m.groups.n) };
+    if (/^(?:what(?:'s|s|\s+is)\s+your\s+name|what\s+(?:should|do)\s+i\s+call\s+you|do\s+you\s+have\s+a\s+name|who\s+are\s+you|what\s+are\s+you)$/i.test(s)) return { intent: 'who' };
+    m = s.match(/^(?:take|make|write|jot(?:\s+down)?|add|leave)\s+(?:a\s+|me\s+a\s+)?(?:quick\s+)?note(?:\s+(?:that|saying|to\s+say|:)|\s*:)?\s+(?<t>.+)$/i) || s.match(/^(?:note(?:\s+down)?|jot\s+down|write\s+down)\s*(?:that|:)?\s+(?<t>.+)$/i);
     if (m) return { intent: 'take_note', text: unquote(m.groups.t) };
     if (/^(?:read|show|open|what(?:'s|\s+is|\s+are))\s+(?:me\s+)?(?:in\s+)?(?:my\s+|the\s+)?notes?$/i.test(s)) return { intent: 'read_notes' };
     m = s.match(/^(?:remember|don'?t\s+forget)\s+(?:that\s+)?(?<t>.+)$/i) || s.match(/^(?<t>.+?)[,.;]?\s+(?:please\s+)?(?:remember|don'?t\s+forget)\s+(?:that|this|it)$/i);
@@ -332,12 +420,7 @@ const COMPOUND =
   /(?:\s|,\s*)(?:and|then|and\s+then|also|after\s+that|plus)\s+(?:also\s+)?(?:please\s+)?(?:create|make|open|put|add|move|write|search|set|remind|play|pause|resume|skip|mute|unmute|turn|raise|lower|increase|decrease|delete|rename|close|start|launch|tell|show|find|copy|go|save|name|type|paste|list|take|note|check|look|dance|jump|wave|flip|sit|sleep|come|follow|remember|read)\b/i;
 const QUESTION = /^(?:what|why|how|who|when|where|which|is|are|do|does|did|can|could|should|would|will|explain|describe|tell\s+me\s+about)\b/i;
 
-/**
- * @returns {object|null} `{ intent, ...slots }`, `{ intent: 'complex' }` for
- * multi-step requests (best left to the AI), or null when nothing matched.
- */
-export function parse(text) {
-  const s = normalize(text);
+function parseNormalized(s) {
   if (!s) return { intent: 'greet', input: s };
   if (COMPOUND.test(s)) return { intent: 'complex', input: s };
   for (const rule of RULES) {
@@ -345,4 +428,17 @@ export function parse(text) {
     if (r) return { ...r, input: s };
   }
   return QUESTION.test(s) ? { intent: 'question', input: s } : null;
+}
+
+/**
+ * @param opts.names  the character's name(s), to recognize "Pixel, …" as addressing it
+ * @returns {object|null} `{ intent, ...slots }`, `{ intent: 'complex' }` for
+ * multi-step requests (best left to the AI), or null when nothing matched.
+ */
+export function parse(text, { names = [] } = {}) {
+  const r = parseNormalized(normalize(text, { names, bare: false }));
+  if (r && r.intent !== 'question') return r;
+  // "Pixel open notepad" (no comma): try again without the leading name.
+  const s = normalize(text, { names, bare: true });
+  return (s !== r?.input && parseNormalized(s)) || r;
 }

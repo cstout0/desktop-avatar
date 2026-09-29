@@ -10,7 +10,7 @@ import { CommandCenter } from '../src/main/commands/center.js';
 import { Ollama } from '../src/main/brain/ollama.js';
 import { Assistant } from '../src/main/brain/assistant.js';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-ai-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'avatar-ai-'));
 const folders = { home: root };
 for (const k of ['desktop', 'documents', 'downloads', 'pictures', 'music', 'videos']) {
   folders[k] = path.join(root, k[0].toUpperCase() + k.slice(1));
@@ -18,6 +18,7 @@ for (const k of ['desktop', 'documents', 'downloads', 'pictures', 'music', 'vide
 }
 const calls = [];
 const timers = new Timers();
+let charName = 'Pixel';
 const actions = new Actions({
   paths: new SafePaths(folders),
   shell: {
@@ -35,14 +36,19 @@ const actions = new Actions({
   timers,
   dataDir: path.join(root, 'appdata'),
   screenshot: async () => calls.push(['screenshot']),
+  getName: () => charName,
+  setName: (n) => {
+    charName = n;
+  },
 });
 const ollama = new Ollama(() => ({ url: 'http://127.0.0.1:11434', model: 'qwen3:4b-instruct', keepAlive: '10m', enabled: true }));
-const assistant = new Assistant({ ollama, actions, getFacts: () => actions.facts() });
+const assistant = new Assistant({ ollama, actions, getFacts: () => actions.facts(), getName: () => charName });
 const said = [];
 const center = new CommandCenter({
   actions,
   assistant,
   ollama,
+  getNames: () => [charName],
   present: {
     say: (m) => said.push(m),
     carry: (item) => calls.push(['carry', item]),
@@ -79,7 +85,7 @@ const tw = performance.now();
 await ollama.warm();
 console.log(`warm in ${Math.round(performance.now() - tw)} ms\n`);
 
-await turn('Claude, create a folder named Test Folder', () => exists(folders.desktop, 'Test Folder'));
+await turn('Pixel, create a folder named Test Folder', () => exists(folders.desktop, 'Test Folder'));
 await turn("hey, I'm planning a trip to Japan. Make a folder for it and put a file called packing list in it", () => {
   const dirs = fs.readdirSync(folders.desktop).filter((d) => /japan|trip/i.test(d));
   if (!dirs.length) throw new Error(`no trip folder: ${fs.readdirSync(folders.desktop)}`);
@@ -89,7 +95,7 @@ await turn("hey, I'm planning a trip to Japan. Make a folder for it and put a fi
 await turn("what's 17 times 23?", ({ reply }) => /391/.test(reply));
 await turn("I'm bored", ({ reply }) => reply.length > 5);
 await turn('remind me to drink water in half an hour', () => timers.list().some((t) => /water/i.test(t.label)));
-await turn('can you make a note that I parked on level 3', () => /level 3/.test(fs.readFileSync(path.join(folders.documents, 'Claude Notes.txt'), 'utf8')));
+await turn('can you make a note that I parked on level 3', () => /level 3/.test(fs.readFileSync(path.join(folders.documents, 'Desktop Avatar Notes.txt'), 'utf8')));
 await turn('my name is Cam, please remember that', () => actions.facts().some((f) => /cam/i.test(f.text)));
 await turn("what's my name?", ({ reply }) => /cam/i.test(reply));
 await turn('open spotify and turn the volume up', ({ calls: c }) => c.some((x) => x[0] === 'launch') && c.some((x) => x[0] === 'media' && x[1] === 'volup'));
@@ -101,6 +107,10 @@ await turn("what's the weather like today?", ({ reply }) => /search|internet|onl
 await turn('dance for me!', ({ calls: c }) => c.some((x) => x[0] === 'emote' && x[1] === 'dance'));
 await turn('tell me a joke', ({ reply }) => reply.length > 15);
 await turn('whats on my desktop', ({ reply }) => /Homework/.test(reply));
+await turn("what's your name?", ({ reply }) => /Pixel/.test(reply));
+await turn('honestly I think you should be called Bolt from now on', ({ reply }) => /Bolt/.test(reply) && charName === 'Pixel');
+await turn('yes', () => charName === 'Bolt');
+await turn('Bolt, set a timer for 2 minutes', () => timers.list().some((t) => t.seconds === 120));
 
 timers.clear();
 fs.rmSync(root, { recursive: true, force: true });
