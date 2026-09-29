@@ -1,4 +1,4 @@
-// What Claude can actually do on the PC. Every action is sandboxed to the
+// What the character can actually do on the PC. Every action is sandboxed to the
 // user's folders / installed apps / http(s) links, and nothing destructive
 // happens without an explicit "yes".
 import fs from 'node:fs';
@@ -7,6 +7,10 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { isInside, sanitizeName } from './paths.js';
 import { parseClock } from './parser.js';
+import { bodyNames, resolveStyle } from './restyle.js';
+import { cleanName } from '../names.js';
+import { normalizeLook } from '../../renderer/overlay/look.js';
+import { normalizeMotion } from '../../renderer/overlay/motion.js';
 
 const pickFrom = (arr, rand = Math.random) => arr[Math.floor(rand() * arr.length) % arr.length];
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -84,11 +88,15 @@ export class Actions {
    * @param deps.paths     SafePaths
    * @param deps.shell     { openPath, openExternal, trashItem, showItemInFolder }
    * @param deps.apps      AppIndex
-   * @param deps.emote     (name, extra) => void    make Claude do something
+   * @param deps.emote     (name, extra) => void    make the character do something
    * @param deps.media     (action) => void        press media keys
    * @param deps.timers    Timers
    * @param deps.dataDir   where memory.json lives
    * @param deps.screenshot () => Promise<void>
+   * @param deps.getName   () => the character's current name ('' if it has none yet)
+   * @param deps.setName   (name) => void
+   * @param deps.openSettings (section?) => void   show the settings window
+   * @param deps.focus     Focus (pomodoro), optional
    */
   constructor(deps) {
     this.d = deps;
@@ -97,8 +105,13 @@ export class Actions {
     this.memFile = path.join(deps.dataDir, 'memory.json');
   }
 
+  /** Hook up parts that are created later (focus timer, games). */
+  attach(deps) {
+    Object.assign(this.d, deps);
+  }
+
   notesFile() {
-    return path.join(this.d.paths.folders.documents, 'Claude Notes.txt');
+    return path.join(this.d.paths.folders.documents, 'Desktop Avatar Notes.txt');
   }
 
   // ---- memory --------------------------------------------------------------------
@@ -371,8 +384,56 @@ export class Actions {
 
   timers_status() {
     const list = this.d.timers.list();
-    if (!list.length) return { ok: true, say: 'No timers running.' };
-    return { ok: true, say: list.map((t) => `⏱ ${t.label ?? t.kind}: ${fmtDuration(Math.max(0, Math.round((t.due - Date.now()) / 1000)))} left`).join('\n') };
+    const lines = list.map((t) => `⏱ ${t.label ?? t.kind}: ${fmtDuration(Math.max(0, Math.round((t.due - Date.now()) / 1000)))} left`);
+    const f = this.d.focus?.publicState();
+    if (f && f.phase !== 'idle') lines.unshift(`${f.phase === 'focus' ? '🍅 Focus' : '☕ Break'}: ${fmtDuration(Math.round(f.remaining / 1000))} left${f.paused ? ' (paused)' : ''}`);
+    if (!lines.length) return { ok: true, say: 'No timers running.' };
+    return { ok: true, say: lines.join('\n') };
+  }
+
+  // ---- mini-games --------------------------------------------------------------------------------
+
+  play({ game } = {}) {
+    if (!this.d.games) return { ok: false, say: 'Games aren’t available right now.' };
+    const r = this.d.games.start(game === 'hide' ? 'hide' : game === 'boxing' || game === 'box' ? 'boxing' : 'fetch');
+    return r.ok ? { ok: true, ...(r.say ? { say: r.say, mood: 'happy' } : {}) } : r; // it announces the game itself
+  }
+
+  stop_game() {
+    if (!this.d.games) return { ok: true, say: 'We weren’t playing anything.' };
+    return this.d.games.stop();
+  }
+
+  // ---- focus buddy (pomodoro) -----------------------------------------------------------------
+
+  focus_start({ minutes } = {}) {
+    if (!this.d.focus) return { ok: false, say: 'Focus mode isn’t available right now.' };
+    this.d.focus.startFocus(minutes || undefined); // it announces itself
+    return { ok: true };
+  }
+
+  focus_stop() {
+    if (!this.d.focus || this.d.focus.state.phase === 'idle') return { ok: true, say: 'No focus session running.' };
+    this.d.focus.end();
+    return { ok: true };
+  }
+
+  focus_pause() {
+    if (!this.d.focus || this.d.focus.state.phase === 'idle') return { ok: true, say: 'No focus session running.' };
+    this.d.focus.pause();
+    return { ok: true, say: 'Paused ⏸ Say “resume focus” when you’re back.', mood: 'normal' };
+  }
+
+  focus_resume() {
+    if (!this.d.focus?.state.paused) return { ok: true, say: 'Nothing to resume.' };
+    this.d.focus.resume();
+    return { ok: true, say: 'And we’re back! 🍅', mood: 'happy' };
+  }
+
+  focus_break() {
+    if (!this.d.focus) return { ok: false, say: 'Focus mode isn’t available right now.' };
+    this.d.focus.startBreak(false);
+    return { ok: true };
   }
 
   time() {
@@ -433,7 +494,7 @@ export class Actions {
       sit: 'Taking a seat.',
       celebrate: '🎉 Woohoo!',
       'other-screen': 'On my way!',
-      swing: pickFrom(['Wheee! 🩢', 'Tarzan mode!', 'Hold my antenna!'], this.rand),
+      swing: pickFrom(['Wheee! 🐒', 'Tarzan mode!', 'Hold my antenna!'], this.rand),
       climb: pickFrom(['Up I go! 🧗', 'Time for some climbing!'], this.rand),
       wallclimb: 'Scaling the screen!',
       explore: 'Adventure time!',
@@ -477,13 +538,99 @@ export class Actions {
   }
 
   who() {
-    return { ok: true, say: 'I’m Claude — your little desktop buddy. I run entirely on your PC: no internet, no cost.', mood: 'happy' };
+    const name = this.d.getName?.();
+    if (!name) return { ok: true, say: 'I’m your little desktop buddy, and I don’t have a name yet! Tell me “your name is …”.', mood: 'happy' };
+    return { ok: true, say: `I’m ${name}, your little desktop buddy. I run entirely on your PC with a local AI: no internet, no cost.`, mood: 'happy' };
+  }
+
+  /** Change the character's own name. `confirm` asks first (used when the AI suggests it). */
+  rename_self({ name, confirm = false } = {}) {
+    const clean = cleanName(name);
+    if (!clean) return { ok: false, ask: { question: 'Ooh, a new name? What should it be?', slot: 'name', intent: 'rename_self', base: {} } };
+    const old = this.d.getName?.() || '';
+    if (old.toLowerCase() === clean.toLowerCase()) return { ok: true, say: `That’s already my name! 😄`, mood: 'happy' };
+    if (!this.d.setName) return { ok: false, say: 'I can’t change my name right now.', mood: 'error' };
+    if (confirm) return { ok: true, confirm: { question: `Change my name to “${clean}”?`, yes: () => this.rename_self({ name: clean }) } };
+    this.d.setName(clean);
+    const say = old ? `${clean}? I love it! Goodbye “${old}”, hello “${clean}”! 🎉` : `${clean}! I love it! 🎉 Double-click me anytime to chat.`;
+    return { ok: true, say, mood: 'happy', emote: 'celebrate', data: { name: clean } };
   }
 
   hide() {
     this.d.emote('hide');
     return { ok: true, say: 'Okay, I’ll hide for 10 minutes. 👋', mood: 'normal' };
   }
+
+  /**
+   * Change its own shape and moves: "turn into a ghost", "walk like a penguin",
+   * "leave a trail of hearts", "give yourself wings". Words go through resolveStyle.
+   */
+  restyle({ body, arms, legs, antenna, gait, trail } = {}) {
+    if (!this.d.setLook || !this.d.setMotion) return { ok: false, say: 'I can’t change my look right now.', mood: 'error' };
+    const look = normalizeLook(this.d.getLook?.());
+    const motion = normalizeMotion(this.d.getMotion?.());
+    const lines = [];
+    const want = { body, arms, legs, antenna, gait, trail };
+    for (const [kind, word] of Object.entries(want)) {
+      if (word == null || word === '') continue;
+      const id = resolveStyle(kind, word);
+      if (!id) {
+        if (kind === 'body') return { ok: false, say: `I don’t know how to be ${/^[aeiou]/i.test(word) ? 'an' : 'a'} ${word}! I can be a ${bodyNames().join(', ')}… or open my wardrobe for more. 🎨`, mood: 'normal' };
+        return { ok: false, say: `Hmm, I don’t know that one (“${word}”). Have a look in my settings under Moves and Wardrobe! 🕺`, mood: 'normal' };
+      }
+      if (kind === 'gait' || kind === 'trail') motion[kind] = id;
+      else look[kind] = id;
+      lines.push(RESTYLE_LINES[kind]?.[id] ?? '');
+    }
+    if (!lines.length) return { ok: false, ask: { question: 'Ooh, a makeover? What should I turn into? (a ghost, a slime, a star…)', slot: 'body', intent: 'restyle', base: {} } };
+    this.d.setLook(look);
+    this.d.setMotion(motion);
+    const say = lines.filter(Boolean).join(' ') || 'Ta-da! ✨';
+    return { ok: true, say, mood: 'happy', emote: gait || trail ? 'come' : 'spin' };
+  }
+
+  settings({ section } = {}) {
+    this.d.openSettings?.(section ?? undefined);
+    return { ok: true, say: section === 'wardrobe' ? 'Ooh, dress-up time! 👗' : 'Here’s my room. Change anything you like!', mood: 'happy', emote: 'wave' };
+  }
 }
+
+const RESTYLE_LINES = {
+  body: {
+    classic: 'Back to the classic me! 🍬',
+    mochi: 'Squishy mochi mode! 🍡',
+    bean: 'Tall bean, reporting in. 🫘',
+    box: 'I’m toast! 🍞',
+    pear: 'Pear-fect! 🍐',
+    heart: 'All heart! 💗',
+    star: 'I’m a star! ⭐',
+    ghost: 'Boooo! 👻',
+    slime: 'Blorp! I’m a slime! 🟢',
+    cloud: 'Floating on cloud nine! ☁️',
+  },
+  gait: {
+    auto: 'Back to my natural walk!',
+    walk: 'Just walking, like normal.',
+    hop: 'Boing boing! 🐰',
+    waddle: 'Waddle waddle! 🐧',
+    strut: 'Watch me strut! 😎',
+    tiptoe: 'Shhh… sneaking around. 🤫',
+    float: 'Look, I’m floating! 👻',
+    roll: 'Wheee, rolling! 🎳',
+    robot: 'BEEP. BOOP. ROBOT WALK ACTIVATED. 🤖',
+  },
+  trail: {
+    none: 'Trail off.',
+    sparkles: 'Sparkle trail on! ✨',
+    hearts: 'Leaving hearts everywhere 💕',
+    bubbles: 'Bloop bloop, bubbles! 🫧',
+    notes: 'La la la, music trail! 🎵',
+    stars: 'Stardust trail! ⭐',
+    rainbow: 'Rainbow road! 🌈',
+  },
+  arms: { wings: 'Wings! Maybe I can fly? 🪽', gloves: 'Cartoon gloves on! 🧤', paws: 'Paws up! 🐾', noodle: 'Noodle arms!', tiny: 'Tiny arms! I can almost reach…', nubby: 'Chubby arms, ready for hugs!', none: 'Look, no hands!' },
+  legs: { sneakers: 'Fresh kicks! 👟', boots: 'Rain boots on! 🥾', paws: 'Pitter-patter 🐾', stick: 'Stick legs!', noodle: 'Noodle legs!', stubby: 'Stompy legs!', none: 'Who needs legs? I float! 🛸' },
+  antenna: { sparkle: 'Sparkly antenna! ✨', star: 'Star antenna! ⭐', heart: 'Love antenna! 💗', bulb: 'Bright idea! 💡', sprout: 'I’m sprouting! 🌱', none: 'Antenna off. Incognito!' },
+};
 
 export { fmtDuration, isInside };

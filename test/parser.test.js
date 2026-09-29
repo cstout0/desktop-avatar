@@ -2,11 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalize, parse, parseClock, parseDuration } from '../src/main/commands/parser.js';
 
+// The character's name (picked on first run) works as a wake word.
+const NAMES = { names: ['Pixel'] };
+
 const cases = [
-  // The user's own example.
-  ['Claude, create a folder named Test Folder', { intent: 'create_folder', name: 'Test Folder', location: null }],
-  ['claude create a folder named Test Folder.', { intent: 'create_folder', name: 'Test Folder' }],
-  ['Hey Claude, could you please make a new folder on my desktop called Projects', { intent: 'create_folder', name: 'Projects', location: 'my desktop' }],
+  // The user's own example, with the character's name in front.
+  ['Pixel, create a folder named Test Folder', { intent: 'create_folder', name: 'Test Folder', location: null }],
+  ['pixel create a folder named Test Folder.', { intent: 'create_folder', name: 'Test Folder' }],
+  ['Hey Pixel, could you please make a new folder on my desktop called Projects', { intent: 'create_folder', name: 'Projects', location: 'my desktop' }],
   ['create a folder called Photos in my documents', { intent: 'create_folder', name: 'Photos', location: 'my documents' }],
   ['make a folder called "Q3 Reports" in downloads', { intent: 'create_folder', name: 'Q3 Reports', location: 'downloads' }],
   ['new folder Stuff', { intent: 'create_folder', name: 'Stuff' }],
@@ -37,7 +40,7 @@ const cases = [
   ['set a timer', { intent: 'timer', missing: 'duration' }],
   // Open
   ['open notepad', { intent: 'open', target: 'notepad' }],
-  ['Claude, launch spotify', { intent: 'open', target: 'spotify' }],
+  ['Pixel, launch spotify', { intent: 'open', target: 'spotify' }],
   ['open youtube.com', { intent: 'open', target: 'youtube.com' }],
   ['open my downloads folder', { intent: 'open', target: 'downloads folder' }],
   ['open up the calculator app', { intent: 'open', target: 'calculator' }],
@@ -84,6 +87,27 @@ const cases = [
   ['whats on my desktop', { intent: 'list', location: 'desktop' }],
   ['my name is Cam, please remember that', { intent: 'remember', name: 'Cam' }],
   ['call me Cam', { intent: 'remember', name: 'Cam' }],
+  // The character's own name
+  ['your name is Bolt', { intent: 'rename_self', name: 'Bolt' }],
+  ["I'll call you Mr Bubbles", { intent: 'rename_self', name: 'Mr Bubbles' }],
+  ['Pixel, change your name to Ziggy please', { intent: 'rename_self', name: 'Ziggy' }],
+  ['rename yourself to Nova', { intent: 'rename_self', name: 'Nova' }],
+  ["what's your name?", { intent: 'who' }],
+  ['Pixel!', { intent: 'greet' }],
+  ['hey pixel', { intent: 'greet' }],
+  // Focus buddy
+  ['start a focus session', { intent: 'focus_start', minutes: null }],
+  ['Pixel, focus for 45 minutes', { intent: 'focus_start', minutes: 45 }],
+  ["let's focus for an hour", { intent: 'focus_start', minutes: 60 }],
+  ['pomodoro', { intent: 'focus_start' }],
+  ['stop the pomodoro', { intent: 'focus_stop' }],
+  ['pause focus', { intent: 'focus_pause' }],
+  ['take a break', { intent: 'focus_break' }],
+  // Its settings window (but "open settings" still means Windows Settings)
+  ['change your outfit', { intent: 'settings', section: 'wardrobe' }],
+  ["let's play dress up", { intent: 'settings', section: 'wardrobe' }],
+  ['open your settings', { intent: 'settings', section: null }],
+  ['open settings', { intent: 'open', target: 'settings' }],
   // Leave these to the AI
   ['create a folder called Trip and put a file called plan.txt in it', { intent: 'complex' }],
   ['why is the sky blue', { intent: 'question' }],
@@ -91,19 +115,34 @@ const cases = [
 
 for (const [input, expected] of cases) {
   test(`parse: ${input}`, () => {
-    const r = parse(input);
+    const r = parse(input, NAMES);
     assert.ok(r, 'should match something');
     for (const [k, v] of Object.entries(expected)) assert.deepEqual(r[k], v, `${k}: got ${JSON.stringify(r[k])} (full: ${JSON.stringify(r)})`);
   });
 }
 
 test('unmatched chatter returns null (goes to the AI)', () => {
-  assert.equal(parse('I had a rough day at work'), null);
+  assert.equal(parse('I had a rough day at work', NAMES), null);
 });
 
-test('normalize strips wake words and politeness', () => {
-  assert.equal(normalize('Hey Claude, can you please open notepad for me?'), 'open notepad');
-  assert.equal(normalize('Cloud, dance please'), 'dance');
+test('normalize strips the name and politeness', () => {
+  assert.equal(normalize('Hey Pixel, can you please open notepad for me?', NAMES), 'open notepad');
+  assert.equal(normalize('Pixel: dance please', NAMES), 'dance');
+  assert.equal(normalize('Pixelated dreams', NAMES), 'Pixelated dreams', 'only the whole name');
+});
+
+test('a name that is also a command still takes commands', () => {
+  const dance = { names: ['Dance'] };
+  assert.equal(parse('dance', dance).name, 'dance');
+  assert.equal(parse('dance for me', dance).name, 'dance');
+  assert.equal(parse('Dance, open notepad', dance).target, 'notepad');
+  assert.equal(parse('Hey Dance open notepad', dance).target, 'notepad');
+});
+
+test('multi-word names, and no name configured', () => {
+  assert.equal(parse('hey mr bubbles, what time is it', { names: ['Mr Bubbles'] }).intent, 'time');
+  assert.equal(parse('Mr. T, open notepad', { names: ['Mr. T'] }).target, 'notepad');
+  assert.equal(parse('Pixel, open notepad'), null, 'an unknown name is left for the AI');
 });
 
 test('durations', () => {

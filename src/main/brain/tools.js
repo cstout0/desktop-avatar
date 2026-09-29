@@ -1,7 +1,11 @@
 // Tools the local model may call. Each maps onto a sandboxed Actions method, so
 // the AI gets exactly the same safety rules as the built-in command engine.
 
+import { ANTENNAS, ARMS, BODIES, LEGS } from '../../renderer/overlay/bodies.js';
+import { GAITS, TRAILS } from '../../renderer/overlay/motion.js';
+
 const str = (description) => ({ type: 'string', ...(description ? { description } : {}) });
+const oneOf = (list, description) => ({ type: 'string', enum: list.map((x) => x.id), description });
 const num = (description) => ({ type: 'number', ...(description ? { description } : {}) });
 const LOCATION = str('Where: desktop (default), documents, downloads, pictures, music, videos, or the name of an existing folder');
 
@@ -25,10 +29,25 @@ export const TOOLS = [
   tool('move_to_recycle_bin', 'Delete a file or folder by moving it to the Recycle Bin. The user will be asked to confirm first.', { name: str('File or folder name'), location: LOCATION }, ['name']),
   tool('rename_item', 'Rename a file or folder.', { from: str('Current name'), to: str('New name') }, ['from', 'to']),
   tool('take_screenshot', 'Take a screenshot of the screen.'),
+  tool('rename_yourself', 'Change YOUR OWN name (the desktop character) when the user gives you a new one. Not for the user’s name (use remember_fact for that). The user confirms first.', { name: str('Your new name') }, ['name']),
+  tool('focus_timer', 'Pomodoro focus sessions: start one (you sit and work alongside the user), stop, pause, resume, or start a short break.', { action: { type: 'string', enum: ['start', 'stop', 'pause', 'resume', 'break'] }, minutes: num('Focus length in minutes (start only; default 25)') }, ['action']),
+  tool(
+    'change_style',
+    'Change YOUR OWN body shape, arms, legs, antenna, walk style or trail when the user asks (e.g. "turn into a ghost", "walk like a penguin", "leave a trail of hearts"). Only include what they asked for.',
+    {
+      body: oneOf(BODIES, 'Body shape'),
+      arms: oneOf(ARMS, 'Arm style'),
+      legs: oneOf(LEGS, 'Leg style ("none" = it floats)'),
+      antenna: oneOf(ANTENNAS, 'Antenna tip'),
+      walk: oneOf(GAITS, 'How it walks: "float" if they want it to float or drift, "auto" = what suits its body'),
+      trail: oneOf(TRAILS, 'What it leaves behind when it moves'),
+    },
+  ),
+  tool('play_game', 'Play a mini-game with the user on the desktop: fetch (they throw a ball, you chase it), hide (hide and seek: you hide behind a window) or boxing (you punch pretend pop-up windows around; puts your cartoon gloves on). "stop" ends the game.', { game: { type: 'string', enum: ['fetch', 'hide', 'boxing', 'stop'] } }, ['game']),
   tool(
     'animate',
-    'Make yourself (the desktop character) move or emote. swing = swing on your grappling rope; climb = climb up the side of a window onto its top; wallclimb = climb the edge of the screen; explore = hop up onto a window; other_screen = walk to the other monitor; come = walk to the mouse cursor; follow = follow the cursor for a while.',
-    { action: { type: 'string', enum: ['dance', 'wave', 'flip', 'jump', 'sit', 'sleep', 'celebrate', 'spin', 'come', 'follow', 'laugh', 'stretch', 'swing', 'climb', 'wallclimb', 'explore', 'other_screen'] } },
+    'Make yourself (the desktop character) move or emote. swing = swing on your grappling rope; climb = climb up the side of a window onto its top; wallclimb = climb the edge of the screen; explore = hop up onto a window; fly = fly around (only if you have wings on); other_screen = walk to the other monitor; come = walk to the mouse cursor; follow = follow the cursor for a while.',
+    { action: { type: 'string', enum: ['dance', 'wave', 'flip', 'jump', 'sit', 'sleep', 'celebrate', 'spin', 'come', 'follow', 'laugh', 'stretch', 'swing', 'climb', 'wallclimb', 'explore', 'fly', 'other_screen'] } },
     ['action'],
   ),
 ];
@@ -76,6 +95,20 @@ export async function runTool(actions, name, args = {}) {
       return actions.rename({ from: args.from, to: args.to });
     case 'take_screenshot':
       return actions.screenshot();
+    case 'rename_yourself':
+      return actions.rename_self({ name: args.name, confirm: true });
+    case 'change_style':
+      return actions.restyle({ body: args.body, arms: args.arms, legs: args.legs, antenna: args.antenna, gait: args.walk, trail: args.trail });
+    case 'play_game': {
+      const r = args.game === 'stop' ? actions.stop_game() : actions.play({ game: args.game });
+      return { ...r, say: r.say ?? (args.game === 'stop' ? 'Game over.' : 'Game on!') };
+    }
+    case 'focus_timer': {
+      const fn = { start: 'focus_start', stop: 'focus_stop', pause: 'focus_pause', resume: 'focus_resume', break: 'focus_break' }[args.action];
+      if (!fn) return { ok: false, say: 'I don’t know that focus action.' };
+      const r = actions[fn]({ minutes: asNum(args.minutes) || null });
+      return { ...r, say: r.say ?? (args.action === 'start' ? 'Focus session started.' : 'Done.') };
+    }
     case 'animate':
       return actions.emote({ name: args.action === 'other_screen' ? 'other-screen' : args.action });
     default:

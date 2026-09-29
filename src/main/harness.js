@@ -21,7 +21,7 @@ function readBody(req) {
   });
 }
 
-export function startHarness({ app, overlays, watcher, handlers = {}, port = Number(process.env.CLAUDE_HARNESS_PORT) || 47821 }) {
+export function startHarness({ app, overlays, watcher, handlers = {}, port = Number(process.env.AVATAR_HARNESS_PORT) || 47821 }) {
   const token = crypto.randomBytes(12).toString('hex');
   const server = http.createServer(async (req, res) => {
     if (req.headers['x-token'] !== token) {
@@ -68,8 +68,8 @@ export function startHarness({ app, overlays, watcher, handlers = {}, port = Num
           });
           break;
         case '/screen-crop': {
-          // The real composited screen (Claude over the user's windows), cropped to a
-          // small box so tests only ever look at the area around Claude.
+          // The real composited screen (the character over the user's windows), cropped to a
+          // small box so tests only ever look at the area around the character.
           const { x, y, w, h, file } = body;
           const displays = screen.getAllDisplays();
           const d = displays.find((dd) => x >= dd.bounds.x && x < dd.bounds.x + dd.bounds.width) || displays[0];

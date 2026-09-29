@@ -16,13 +16,15 @@ export class CommandCenter extends EventEmitter {
    * @param deps.assistant  Assistant (local LLM) or null
    * @param deps.ollama     Ollama client
    * @param deps.present    { say, carry, emote, thinking }
+   * @param deps.getNames   () => the character's name(s), used as wake words
    */
-  constructor({ actions, assistant, ollama, present }) {
+  constructor({ actions, assistant, ollama, present, getNames = () => [] }) {
     super();
     this.actions = actions;
     this.assistant = assistant;
     this.ollama = ollama;
     this.present = present;
+    this.getNames = getNames;
     this.pending = null;
     this.buttons = new Map();
     this.busy = false;
@@ -51,29 +53,29 @@ export class CommandCenter extends EventEmitter {
   show(r, { source } = {}) {
     if (!r) return r;
     if (r.confirm) {
-      this.pending = { kind: 'confirm', yes: r.confirm.yes, at: Date.now() };
+      this.pending = { kind: 'confirm', yes: r.confirm.yes, at: Date.now(), source };
       const buttons = this.registerButtons([
-        { label: 'Yes', run: () => this.handle('yes') },
-        { label: 'No', run: () => this.handle('no') },
+        { label: 'Yes', run: () => this.handle('yes', { source }) },
+        { label: 'No', run: () => this.handle('no', { source }) },
       ]);
-      this.present.say({ text: r.confirm.question, mood: 'normal', actions: buttons, dur: 30 });
+      this.present.say({ text: r.confirm.question, mood: 'normal', actions: buttons, dur: 30, source });
       return r;
     }
     if (r.ask) {
       this.pending = { kind: 'slot', intent: r.ask.intent, slot: r.ask.slot, base: r.ask.base ?? {}, at: Date.now() };
-      this.present.say({ text: r.ask.question, mood: 'normal', dur: 20 });
+      this.present.say({ text: r.ask.question, mood: 'normal', dur: 20, source });
       this.present.listenSoon?.();
       return r;
     }
     if (r.item) this.present.carry(r.item);
     if (r.emote) this.present.emote(r.emote);
-    if (r.say) this.present.say({ text: r.say, mood: r.mood ?? (r.ok === false ? 'error' : 'normal'), actions: this.registerButtons(r.buttons), dur: r.dur });
+    if (r.say) this.present.say({ text: r.say, mood: r.mood ?? (r.ok === false ? 'error' : 'normal'), actions: this.registerButtons(r.buttons), dur: r.dur, source });
     this.log.push({ at: Date.now(), source, say: r.say, ok: r.ok });
     return r;
   }
 
   slotValue(slot, raw) {
-    const s = normalize(raw).replace(/^(?:call\s+it|name\s+it|it'?s|its|make\s+it|how\s+about)\s+/i, '').replace(/^["']|["']$/g, '').trim();
+    const s = normalize(raw, { names: this.getNames() }).replace(/^(?:call\s+it|name\s+it|it'?s|its|make\s+it|how\s+about)\s+/i, '').replace(/^["']|["']$/g, '').trim();
     if (slot === 'duration') return parseDuration(s);
     return s;
   }
@@ -85,7 +87,8 @@ export class CommandCenter extends EventEmitter {
     const raw = String(text ?? '').trim();
     if (!raw) return null;
     this.emit('heard', raw, source);
-    const said = normalize(raw);
+    const names = { names: this.getNames() };
+    const said = normalize(raw, names);
 
     // A yes/no for something we asked about.
     if (this.pending?.kind === 'confirm' && Date.now() - this.pending.at < 120000) {
@@ -105,7 +108,7 @@ export class CommandCenter extends EventEmitter {
     if (this.pending?.kind === 'slot' && Date.now() - this.pending.at < 120000) {
       const p = this.pending;
       this.pending = null;
-      const again = parse(raw);
+      const again = parse(raw, names);
       const isNewCommand = again && !['question', 'greet', 'thanks'].includes(again.intent) && again.intent !== p.intent && !NO.test(said);
       if (NO.test(said)) return this.show({ ok: true, say: 'No worries, never mind!' }, { source });
       if (!isNewCommand) {
@@ -117,7 +120,7 @@ export class CommandCenter extends EventEmitter {
       }
     }
 
-    const parsed = parse(raw);
+    const parsed = parse(raw, names);
     const brain = await this.ollama.check();
     const useRules = parsed && this.actions[parsed.intent] && !(brain.ok && CHATTY.has(parsed.intent));
     if (useRules) {
@@ -141,7 +144,7 @@ export class CommandCenter extends EventEmitter {
         const buttons = this.registerButtons(reply.results.flatMap((r) => r.buttons ?? []).slice(0, 3));
         const failed = reply.results.length && reply.results.every((r) => r.ok === false);
         const ok = reply.results.some((r) => r.ok && r.item);
-        this.present.say({ text: reply.text, mood: failed ? 'error' : ok ? 'success' : 'normal', actions: buttons });
+        this.present.say({ text: reply.text, mood: failed ? 'error' : ok ? 'success' : 'normal', actions: buttons, source });
         this.log.push({ at: Date.now(), source, say: reply.text, ok: !failed, ai: true, tools: reply.results.map((r) => r.tool) });
         return { ok: !failed, say: reply.text, results: reply.results, ai: true };
       } catch (err) {
@@ -152,7 +155,7 @@ export class CommandCenter extends EventEmitter {
     }
 
     if (parsed && this.actions[parsed.intent]) return this.show(await this.actions[parsed.intent](parsed), { source });
-    const why = brain.error === 'disabled' ? '' : ' (My AI brain isn’t running — start Ollama and I’ll get a lot smarter!)';
+    const why = brain.error === 'disabled' ? '' : brain.running ? ' (My AI model isn’t downloaded yet: run “npm run setup:ai”.)' : ' (My AI brain isn’t running — start Ollama and I’ll get a lot smarter!)';
     return this.show({ ok: false, say: `I’m not sure how to do that yet.${why} Say “help” to see what I can do.` }, { source });
   }
 }

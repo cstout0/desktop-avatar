@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const SEND = new Set(['audio', 'status', 'clip']);
-const RECV = new Set(['start', 'stop', 'inject', 'inject-end', 'capture']);
+const SEND = new Set(['audio', 'status', 'clip', 'speech', 'wake']);
+const RECV = new Set(['start', 'stop', 'inject', 'inject-end', 'pcm', 'pcm-end', 'capture', 'speak', 'play', 'shush', 'wake-start', 'wake-stop', 'wake-pause']);
 
 contextBridge.exposeInMainWorld('services', {
   send: (ch, data) => {

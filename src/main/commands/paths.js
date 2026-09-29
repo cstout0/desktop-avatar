@@ -1,4 +1,4 @@
-// Safe path handling for file actions. Claude may only create/open things inside
+// Safe path handling for file actions. The character may only create/open things inside
 // the user's own folders, never overwrites, and sanitizes every name.
 import fs from 'node:fs';
 import path from 'node:path';

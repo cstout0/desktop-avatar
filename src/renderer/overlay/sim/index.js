@@ -1,12 +1,14 @@
 // Simulation entry point. `st` is a plain object: it can be cloned across IPC
-// when Claude walks from one monitor's window to another's.
+// when the character walks from one monitor's window to another's.
 import { MAX_FRAME_DT, SUBSTEP } from './constants.js';
 import { newAnim, physicalPose, setPose, stepAnim } from './anim.js';
 import { emptyInput, newBrain, onEvent, think } from './behavior.js';
 import { carryWithPlatforms, newChar, stepCharacter } from './physics.js';
 import { stepParticles } from './particles.js';
+import { stepBall, stepToyWins } from './toys.js';
 
 export const DEFAULT_SETTINGS = {
+  name: '',
   audio: true,
   walkOnWindows: true,
   sleepAfter: 240,
@@ -23,6 +25,11 @@ export function createState({ x, y, scale = 1.25, seed = Date.now() % 100000, se
     events: [],
     commands: [],
     say: [],
+    gameEvents: [], // mini-game moments for the main process (catches, found you...)
+    game: null, // { kind: 'fetch' | 'hide', ... }
+    ball: null, // the fetch ball
+    toys: [], // boxing: pretend pop-up windows
+    focus: null, // pomodoro state from the main process
     control: { active: false, lastInput: 0 },
     audio: { music: false, lastMusic: -99, bpm: 0, energy: 0 },
     cursor: { x: -9999, y: -9999, t: -99 },
@@ -36,7 +43,7 @@ export function createState({ x, y, scale = 1.25, seed = Date.now() % 100000, se
 
 /**
  * Advance the world by one rendered frame. `keys` is the keyboard-driven input
- * (used while the player is controlling Claude); otherwise the brain drives.
+ * (used while the player is controlling the character); otherwise the brain drives.
  */
 export function step(st, world, keys, frameDt) {
   const dt = Math.min(Math.max(frameDt, 0), MAX_FRAME_DT);
@@ -45,7 +52,11 @@ export function step(st, world, keys, frameDt) {
   const input = st.control.active ? keys : ai;
   const n = Math.max(1, Math.ceil(dt / SUBSTEP - 1e-9));
   const h = dt / n;
-  for (let i = 0; i < n; i++) stepCharacter(st, world, input, h);
+  for (let i = 0; i < n; i++) {
+    stepCharacter(st, world, input, h);
+    stepBall(st, world, h);
+    stepToyWins(st, world, h);
+  }
   if (st.control.active) {
     const c = st.char;
     const crouch = c.mode === 'ground' && keys.down && Math.abs(c.vx) < 20 * c.scale;
@@ -58,7 +69,7 @@ export function step(st, world, keys, frameDt) {
   return input;
 }
 
-/** New window/monitor geometry arrived: carry Claude along with its window. */
+/** New window/monitor geometry arrived: carry the character along with its window. */
 export function applyWorld(st, oldWorld, newWorld) {
   if (oldWorld) carryWithPlatforms(st, oldWorld, newWorld);
 }

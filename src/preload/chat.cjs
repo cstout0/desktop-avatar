@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND = new Set(['submit', 'cancel', 'mic', 'audio', 'voice-state']);
-const RECV = new Set(['shown', 'hidden', 'status', 'listen', 'transcript']);
+const RECV = new Set(['shown', 'hidden', 'status', 'listen', 'transcript', 'name-error', 'face']);
 
 contextBridge.exposeInMainWorld('chat', {
   send: (ch, data) => {

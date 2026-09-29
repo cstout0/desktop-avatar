@@ -1,5 +1,5 @@
 // Polls the desktop: app windows -> walkable ledges, fullscreen detection per
-// monitor, the cursor, and a fast path for the window Claude is standing on.
+// monitor, the cursor, and a fast path for the window the character is standing on.
 import { screen } from 'electron';
 import * as w32 from './win32.js';
 import { computeEdges, computePlatforms, sameEdges, samePlatforms } from './platforms.js';
@@ -46,7 +46,9 @@ export class DesktopWatcher {
       const list = raw.map((w) => ({ hwnd: String(w.hwnd), ...toDip(w.rect) }));
       for (const w of list) this.lastRects.set(w.hwnd, w);
       const walkable = this.overlays.settings.get('walkOnWindows') !== false;
-      const platforms = walkable ? computePlatforms(list, regions) : [];
+      // A giant character needs more room above a window to stand on it.
+      const headroom = Math.max(90, 64 * (this.overlays.settings.get('scale') ?? 1.4));
+      const platforms = walkable ? computePlatforms(list, regions, { headroom }) : [];
       const edges = walkable ? computeEdges(list, regions) : [];
       if (!samePlatforms(platforms, this.platforms) || !sameEdges(edges, this.edges)) {
         this.platforms = platforms;
@@ -85,11 +87,11 @@ export class DesktopWatcher {
       return;
     }
     // Only act once the state has been stable for a moment (screenshot tools
-    // and alt-tab flashes shouldn't make Claude bounce between monitors).
+    // and alt-tab flashes shouldn't make the character bounce between monitors).
     if (now - this.fsSince >= this.debounceMs) this.overlays.setFullscreen(ids);
   }
 
-  /** Fast path: follow the window Claude stands on / hangs from as it's dragged. */
+  /** Fast path: follow the window the character stands on / hangs from as it's dragged. */
   pollGround() {
     const rep = this.overlays.lastReport;
     const id = rep?.ground?.kind === 'platform' ? rep.ground.id : rep?.climbWin;

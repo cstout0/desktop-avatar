@@ -17,7 +17,7 @@ function subtract(segs, a, b) {
  * @param wins    windows in z-order (topmost first): { hwnd, left, top, right, bottom }
  * @param regions visible monitor work areas: { x, y, w, h }
  * @param opts.minWidth  shortest usable ledge
- * @param opts.headroom  space needed above a ledge for Claude to stand on it
+ * @param opts.headroom  space needed above a ledge for the character to stand on it
  */
 export function computePlatforms(wins, regions, { minWidth = 40, headroom = 90 } = {}) {
   const out = [];
@@ -49,7 +49,7 @@ export function computePlatforms(wins, regions, { minWidth = 40, headroom = 90 }
 
 /**
  * Climbable window sides: the visible parts of each window's left/right edge.
- * `face` is the direction from the climber toward the window (+1: Claude hangs
+ * `face` is the direction from the climber toward the window (+1: it hangs
  * on the left side facing right; -1: on the right side facing left).
  */
 export function computeEdges(wins, regions, { minHeight = 80, reach = 36, topGap = 20 } = {}) {
@@ -60,7 +60,7 @@ export function computeEdges(wins, regions, { minHeight = 80, reach = 36, topGap
       [w.left, 1],
       [w.right, -1],
     ]) {
-      const body = x - face * reach; // where Claude's body hangs, outside the window
+      const body = x - face * reach; // where the character's body hangs, outside the window
       let segs = [];
       for (const r of regions) {
         if (body < r.x + 4 || body > r.x + r.w - 4) continue;

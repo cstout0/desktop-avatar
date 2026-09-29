@@ -1,10 +1,11 @@
-// The AI "director": lets the local model decide what Claude does, in character.
+// The AI "director": lets the local model decide what the character does, in character.
 //  - Watch-along: when a video plays, the AI decides whether to watch; while
 //    watching it hears the soundtrack (local Whisper) and picks reactions.
-//  - Every few minutes it chooses Claude's next activity from its personality,
-//    the time, and what the user is up to.
+//  - Every few minutes it chooses the character's next activity from its
+//    personality, the time, and what the user is up to.
 //  - While the user is in a fullscreen game it stays quiet and frees the GPU.
 import { screen } from 'electron';
+import { whoAmI } from './assistant.js';
 
 const REACTIONS = ['none', 'laugh', 'gasp', 'wow', 'clap', 'think', 'nod', 'sad', 'dance'];
 const ACTIVITIES = ['explore', 'climb', 'swing', 'wallclimb', 'nap', 'dance', 'sit', 'wander', 'stretch', 'follow_cursor', 'chill'];
@@ -13,8 +14,8 @@ const ACTIVITY_CMD = { explore: 'explore', climb: 'climb', swing: 'swing', wallc
 const schema = (props, required) => ({ type: 'object', properties: props, required });
 
 export class Director {
-  constructor({ ollama, media, ears, whisper, overlays, settings, personality, getFacts = () => [], log = () => {} }) {
-    Object.assign(this, { ollama, media, ears, whisper, overlays, settings, personality, getFacts, log });
+  constructor({ ollama, media, ears, whisper, overlays, settings, personality, speech = null, getFacts = () => [], log = () => {} }) {
+    Object.assign(this, { ollama, media, ears, whisper, overlays, settings, personality, speech, getFacts, log });
     this.watching = null;
     this.lastDecision = Date.now();
     this.recent = [];
@@ -27,7 +28,9 @@ export class Director {
   }
 
   say(text, mood = 'normal', dur) {
-    if (text) this.overlays.sendToBrain('ov:say', { text, mood, dur });
+    if (!text) return;
+    this.overlays.sendToBrain('ov:say', { text, mood, dur });
+    this.speech?.say(text, { source: 'director' });
   }
 
   do(cmd) {
@@ -49,6 +52,10 @@ export class Director {
     return p ? `Your personality (stay in character):\n${p}` : '';
   }
 
+  me(what) {
+    return whoAmI(this.settings.get('name'), what);
+  }
+
   timeText() {
     return new Date().toLocaleString([], { weekday: 'long', hour: 'numeric', minute: '2-digit' });
   }
@@ -66,13 +73,13 @@ export class Director {
 
   async onMedia(now, prev) {
     if (this.watching && (!now || !now.video || now.title !== this.watching.session.title)) await this.endWatch(now);
-    if (!now?.video || this.settings.get('watchAlong') === false || !this.enabled()) return;
+    if (!now?.video || this.settings.get('watchAlong') === false || !this.enabled() || this.busy?.()) return;
     if (!(await this.ollama.check()).ok) {
       // No AI available: still watch, just without commentary.
       return this.beginWatch(now, { watch: true, comment: '' });
     }
     const d = await this.ask(
-      `You are Claude, a little character living on the user's Windows desktop. ${this.persona()}\nThe user just started playing a video. Decide whether you go and watch it with them (you usually do, unless it doesn't fit your personality or mood). Optionally say something short about it (under 80 characters, or empty).`,
+      `You are ${this.me()} living on the user's Windows desktop. ${this.persona()}\nThe user just started playing a video. Decide whether you go and watch it with them (you usually do, unless it doesn't fit your personality or mood). Optionally say something short about it (under 80 characters, or empty).`,
       `Video: "${now.title}"${now.artist ? ` from ${now.artist}` : ''}, playing in ${now.app}. It is ${this.timeText()}.`,
       schema({ watch: { type: 'boolean' }, comment: { type: 'string' } }, ['watch', 'comment']),
     ).catch(() => ({ watch: true, comment: '' }));
@@ -117,7 +124,7 @@ export class Director {
       if (!clip.wav) continue; // silence
       let heard = '';
       try {
-        heard = await this.whisper.transcribe(clip.wav);
+        heard = await this.whisper.transcribe(clip.wav, { commands: false });
       } catch {
         heard = '';
       }
@@ -129,7 +136,7 @@ export class Director {
       const gap = { quiet: 120000, normal: 40000, chatty: 20000 }[chatty] ?? 40000;
       const canTalk = Date.now() - w.lastComment > gap;
       const d = await this.ask(
-        `You are Claude, a little desktop character watching a video together with the user, like a friend on the couch. ${this.persona()}\nYou get the video title and a transcript of what was just said. React naturally. Usually just react with an emote and leave the comment empty. ${canTalk ? 'Only if something is genuinely funny, surprising or interesting, add ONE short comment (under 90 characters).' : 'Do NOT comment right now (leave it empty).'} Never spoil or summarize the video.`,
+        `You are ${this.me('a little desktop character')} watching a video together with the user, like a friend on the couch. ${this.persona()}\nYou get the video title and a transcript of what was just said. React naturally. Usually just react with an emote and leave the comment empty. ${canTalk ? 'Only if something is genuinely funny, surprising or interesting, add ONE short comment (under 90 characters).' : 'Do NOT comment right now (leave it empty).'} Never spoil or summarize the video.`,
         `Video: "${w.session.title}". Just heard: "${heard || '(music or no speech)'}". Your recent comments: ${JSON.stringify(w.comments.slice(-3))}.`,
         schema({ react: { type: 'string', enum: REACTIONS }, comment: { type: 'string' } }, ['react', 'comment']),
       ).catch(() => null);
@@ -151,7 +158,7 @@ export class Director {
   }
 
   async tick() {
-    if (!this.enabled() || this.watching) return;
+    if (!this.enabled() || this.watching || this.busy?.()) return;
     if (this.gaming()) {
       // Free the GPU for the game.
       if (!this.unloaded) this.unloaded = await this.ollama.unload();
@@ -160,7 +167,8 @@ export class Director {
     this.unloaded = false;
     if (Date.now() - this.lastDecision < this.intervalMs()) return;
     const rep = this.overlays.lastReport;
-    if (!rep || rep.control || ['held', 'rope', 'climb'].includes(rep.mode) || ['think', 'listen', 'carry', 'watch'].includes(rep.brain)) return;
+    // Busy (or mid-air, where moves like swing can't start)? Try again on the next tick.
+    if (!rep || rep.control || ['held', 'rope', 'climb', 'air'].includes(rep.mode) || ['think', 'listen', 'carry', 'watch'].includes(rep.brain)) return;
     if (!(await this.ollama.check()).ok) return;
     this.lastDecision = Date.now();
     const d = await this.decide(rep).catch(() => null);
@@ -178,7 +186,7 @@ export class Director {
     const where = rep.ground?.kind === 'platform' ? 'standing on top of a window' : rep.mode === 'ground' ? 'on the bottom of the screen' : 'moving around';
     const facts = this.getFacts().slice(-5).map((f) => f.text).join('; ');
     return this.ask(
-      `You are the inner mind of Claude, a little character that lives on the user's Windows desktop. You can explore (hop onto windows), climb the sides of windows, swing on your grappling rope, climb the screen edge, nap, dance, sit, wander, stretch, follow the user's cursor, or just chill. ${this.persona()}\nPick what to do next so it fits your personality and the moment (e.g. sleepy late at night, quiet while the user seems busy). Vary it; don't repeat your recent activities too much. You may add a very short thought to say out loud (under 70 characters) about 1 time in 3; otherwise leave it empty.`,
+      `You are the inner mind of ${this.me()} that lives on the user's Windows desktop. You can explore (hop onto windows), climb the sides of windows, swing on your grappling rope, climb the screen edge, nap, dance, sit, wander, stretch, follow the user's cursor, or just chill. ${this.persona()}\nPick what to do next so it fits your personality and the moment (e.g. sleepy late at night, quiet while the user seems busy). Vary it; don't repeat your recent activities too much. You may add a very short thought to say out loud (under 70 characters) about 1 time in 3; otherwise leave it empty.`,
       `It is ${this.timeText()}. ${fg ? `The user is using: ${fg}. ` : ''}${this.media.describe() ? `${this.media.describe()}. ` : ''}You're ${where}. Your recent activities: ${this.recent.join(', ') || 'none'}.${facts ? ` About the user: ${facts}.` : ''} What do you do next?`,
       schema({ activity: { type: 'string', enum: ACTIVITIES }, thought: { type: 'string' } }, ['activity', 'thought']),
     );

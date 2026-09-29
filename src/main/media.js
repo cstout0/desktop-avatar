@@ -1,5 +1,5 @@
 // Knows what's playing on the PC (via Windows' media controls) and which window
-// it's in, so Claude can dance to songs and watch videos along with you.
+// it's in, so the character can dance to songs and watch videos along with you.
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
@@ -43,7 +43,8 @@ export class MediaWatcher extends EventEmitter {
   }
 
   start() {
-    const script = path.join(this.root, 'src', 'main', 'helpers', 'media-sessions.ps1');
+    // (When installed, PowerShell needs the real file next to app.asar, not the one inside it.)
+    const script = path.join(this.root, 'src', 'main', 'helpers', 'media-sessions.ps1').replace(/app\.asar(?=[\\/])/, 'app.asar.unpacked');
     this.proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], { windowsHide: true });
     let buf = '';
     this.proc.stdout.setEncoding('utf8');

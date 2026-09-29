@@ -6,10 +6,14 @@ const root = document.documentElement;
 const form = document.getElementById('pill');
 const input = document.getElementById('text');
 const mic = document.getElementById('mic');
+const dice = document.getElementById('dice');
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('statusText');
+const keysHint = document.getElementById('keys');
 
-const PLACEHOLDER = 'Ask Claude to do something…';
+let placeholder = 'Ask me to do something…';
+let naming = false;
+let ideas = [];
 let history = [];
 let hIndex = -1;
 let draft = '';
@@ -17,16 +21,43 @@ let rec = null;
 let cancelled = false;
 let autoSend = null;
 let baseStatus = null;
+let fromVoice = false; // the text in the box came from the microphone
 
-api.on('shown', ({ history: h, status }) => {
-  history = h || [];
+// mode 'chat' (talk to the character) or 'name' (pick its name; first run or "Rename…")
+api.on('shown', ({ history: h, status, mode = 'chat', name = '', ideas: idea = [] }) => {
+  naming = mode === 'name';
+  ideas = idea;
+  history = naming ? [] : h || [];
   hIndex = -1;
   draft = '';
   input.value = '';
+  fromVoice = false;
+  input.maxLength = naming ? 24 : 500;
+  body.classList.toggle('naming', naming);
+  placeholder = naming ? (name ? `A new name for ${name}…` : 'Type a name for me…') : `Ask ${name || 'me'} to do something…`;
+  keysHint.textContent = naming ? 'Enter to confirm · Esc for later' : 'Enter send · Esc close · ↑ history';
   setVoice('idle');
-  setStatus(status);
+  setStatus(naming ? { kind: 'ok', text: name ? 'What should I be called instead? 🎲 for ideas' : 'What should I be called? 🎲 for ideas' } : status);
   requestAnimationFrame(() => body.classList.add('show'));
   setTimeout(() => input.focus(), 30);
+});
+
+api.on('name-error', (text) => {
+  flashStatus('warn', text, 3500);
+  input.focus();
+  input.select();
+});
+
+dice.addEventListener('click', () => {
+  if (!ideas.length) return;
+  const next = ideas.shift();
+  ideas.push(next);
+  input.value = next;
+  input.focus();
+  input.select();
+  dice.classList.remove('rolled');
+  void dice.offsetWidth; // restart the roll animation
+  dice.classList.add('rolled');
 });
 
 api.on('hidden', () => {
@@ -34,7 +65,7 @@ api.on('hidden', () => {
   stopListening(true);
   clearTimeout(autoSend);
 });
-api.on('status', setStatus);
+api.on('status', (s) => !naming && setStatus(s));
 api.on('listen', () => toggleListening());
 
 function setStatus(s) {
@@ -55,7 +86,7 @@ function setVoice(state) {
   body.classList.toggle('speaking', state === 'speaking');
   body.classList.toggle('transcribing', state === 'transcribing');
   input.placeholder =
-    state === 'listening' ? 'Listening… say something like “create a folder named Test”' : state === 'speaking' ? 'Listening…' : state === 'transcribing' ? 'Got it — turning your voice into text…' : PLACEHOLDER;
+    state === 'listening' ? 'Listening… say something like “create a folder named Test”' : state === 'speaking' ? 'Listening…' : state === 'transcribing' ? 'Got it — turning your voice into text…' : placeholder;
   mic.title = state === 'listening' || state === 'speaking' ? 'Stop listening' : 'Talk instead (voice)';
   if (state !== 'listening' && state !== 'speaking') root.style.setProperty('--level', '0');
 }
@@ -67,6 +98,7 @@ function micError(err) {
 }
 
 async function toggleListening() {
+  if (naming) return;
   if (rec?.active) {
     rec.stop(); // finish now and transcribe what we have
     return;
@@ -120,6 +152,7 @@ api.on('transcript', ({ text, error }) => {
     return;
   }
   input.value = text;
+  fromVoice = true;
   input.focus();
   body.classList.add('heard');
   // Send automatically in a moment; typing or Esc cancels.
@@ -133,15 +166,21 @@ form.addEventListener('submit', (e) => {
   e.preventDefault();
   clearTimeout(autoSend);
   const text = input.value.trim();
-  if (!text) return;
-  api.send('submit', text);
-  body.classList.remove('show', 'heard');
+  if (!text) {
+    if (naming) flashStatus('warn', 'Type a name (or roll the 🎲)', 3000);
+    return;
+  }
+  api.send('submit', fromVoice ? { text, voice: true } : text);
+  fromVoice = false;
+  // A name is checked first; the box closes once it's accepted.
+  if (!naming) body.classList.remove('show', 'heard');
 });
 
 mic.addEventListener('click', () => toggleListening());
 
 input.addEventListener('input', () => {
   clearTimeout(autoSend);
+  fromVoice = false; // edited by hand
   body.classList.remove('heard');
 });
 
@@ -162,4 +201,10 @@ input.addEventListener('keydown', (e) => {
     hIndex--;
     input.value = hIndex === -1 ? draft : history[history.length - 1 - hIndex];
   }
+});
+
+// Its face in the corner matches its current look (hat, colors...).
+api.on('face', (url) => {
+  const img = document.getElementById('face');
+  if (img && url) img.src = url;
 });

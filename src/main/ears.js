@@ -1,5 +1,5 @@
 // Hosts the hidden "ears" window (system-audio analysis) and forwards what it
-// hears to Claude's brain: music (bpm, beats), overall energy, sudden bangs.
+// hears to the character's brain: music (bpm, beats), overall energy, sudden bangs.
 import { BrowserWindow, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import { synthLoop } from '../renderer/services/synth.js';
 
 export function createEars({ root, settings, overlays }) {
   let win = null;
+  let markReady;
+  const ready = new Promise((r) => (markReady = r));
   let status = { ok: false, error: 'not started' };
   let last = null;
   let beats = 0;
@@ -80,13 +82,25 @@ export function createEars({ root, settings, overlays }) {
         webPreferences: { preload: path.join(root, 'src/preload/services.cjs'), backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
       });
       await win.loadFile(path.join(root, 'src/renderer/services/index.html'));
-      if (enabled()) win.webContents.send('svc:start');
-      settings.on('change', (key, value) => {
-        if (key === 'audioReactions' && win && !win.isDestroyed()) win.webContents.send(value ? 'svc:start' : 'svc:stop');
-      });
+      // What it listens to (and when) is decided by ListenSource (listen.js).
+      markReady();
+    },
+    ready,
+    setStatus: (s) => {
+      status = s;
+    },
+    /** PNG data URLs (by size) of its head in `look`, drawn in the hidden window. */
+    renderIcons: async (look) => {
+      await ready;
+      if (!win || win.isDestroyed()) return null;
+      return win.webContents.executeJavaScript(`window.__renderIcons(${JSON.stringify(look)})`, true);
     },
     state: () => ({ status, last, beats }),
     captureClip,
+    /** Talk to the hidden services window (it also speaks and plays the character's voice). */
+    send: (ch, data) => {
+      if (win && !win.isDestroyed()) win.webContents.send(`svc:${ch}`, data);
+    },
     harness: {
       // Streams a synthetic drum loop through the analyzer in real time (silent).
       'ears-inject': async ({ bpm = 120, secs = 10 }) => {

@@ -1,22 +1,72 @@
 {
-  "name": "desktop-claude",
-  "productName": "Desktop Claude",
+  "name": "desktop-avatar",
+  "productName": "Desktop Avatar",
   "version": "1.0.0",
-  "description": "A little Claude that lives on your desktop: jumps, swings, dances to your music, and does things when you ask. 100% local.",
+  "description": "A little character that lives on your desktop: jumps, swings, climbs your windows, dances to your music, and does things when you ask. Runs 100% locally with Ollama.",
   "main": "src/main/main.js",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "electron .",
     "test": "node --test \"test/*.test.js\"",
+    "setup": "npm run setup:ai && npm run setup:voice",
     "setup:voice": "node scripts/setup-voice.js",
-    "setup:ai": "node scripts/setup-ai.js"
+    "setup:tts": "node scripts/setup-tts.js",
+    "setup:ai": "node scripts/setup-ai.js",
+    "dist": "electron-builder --win nsis --x64 --publish never"
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^44.4.5"
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "koffi": "^3.3.2"
+  },
+  "author": "Desktop Avatar",
+  "build": {
+    "appId": "com.desktopavatar.app",
+    "productName": "Desktop Avatar",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "personality.md",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "src/main/helpers/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "executableName": "Desktop Avatar"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Desktop Avatar",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "artifactName": "Desktop-Avatar-Setup-${version}.exe"
+    }
   }
 }

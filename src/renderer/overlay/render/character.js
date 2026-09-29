@@ -1,9 +1,15 @@
-// Procedural vector art for Claude. Everything is computed from the sim state
+// Procedural vector art for the character. Everything is computed from the sim state
 // every frame (no sprite sheets), so poses blend smoothly with the physics.
 import { BODY, CENTER_Y, PHYS } from '../sim/constants.js';
 import { currentFace } from '../sim/anim.js';
 import { clamp, TAU } from '../sim/util.js';
+import { DEFAULT_LOOK, hatLift, headRise, paletteFor } from '../look.js';
+import { bodyOf, hasLegs } from '../bodies.js';
+import { bodyMotion, gaitOf, hopUp, idleHop, idleOf } from '../motion.js';
+import { armBack, armFront, footOnly, leg } from './limbs.js';
+import { drawGlasses, drawHat, drawNeck } from './outfit.js';
 
+// Body/face colors are swapped in from the character's look before each draw.
 export const COLORS = {
   body: '#E27A52',
   bodyLight: '#F59E76',
@@ -22,63 +28,6 @@ export const COLORS = {
 
 const OUT = 2.6; // outline width at scale 1
 
-function bodyPath(ctx, w, h) {
-  const hw = w / 2;
-  const hh = h / 2;
-  ctx.beginPath();
-  ctx.moveTo(0, -hh);
-  ctx.bezierCurveTo(hw * 0.74, -hh, hw, -hh * 0.46, hw, hh * 0.12);
-  ctx.bezierCurveTo(hw, hh * 0.72, hw * 0.62, hh, 0, hh);
-  ctx.bezierCurveTo(-hw * 0.62, hh, -hw, hh * 0.72, -hw, hh * 0.12);
-  ctx.bezierCurveTo(-hw, -hh * 0.46, -hw * 0.74, -hh, 0, -hh);
-  ctx.closePath();
-}
-
-function limb(ctx, x0, y0, x1, y1, bend, width) {
-  // Rubber-hose limb: a quadratic curve bowed sideways by `bend`.
-  const mx = (x0 + x1) / 2;
-  const my = (y0 + y1) / 2;
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const len = Math.hypot(dx, dy) || 1;
-  const cx = mx + (-dy / len) * bend;
-  const cy = my + (dx / len) * bend;
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = COLORS.outline;
-  ctx.lineWidth = width + OUT * 1.7;
-  ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  ctx.quadraticCurveTo(cx, cy, x1, y1);
-  ctx.stroke();
-  ctx.strokeStyle = COLORS.body;
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  ctx.quadraticCurveTo(cx, cy, x1, y1);
-  ctx.stroke();
-}
-
-function hand(ctx, x, y, r = 4.6) {
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.fillStyle = COLORS.body;
-  ctx.fill();
-  ctx.lineWidth = OUT;
-  ctx.strokeStyle = COLORS.outline;
-  ctx.stroke();
-}
-
-function foot(ctx, x, y, dir, lift = 0) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(-lift * 0.5 * dir);
-  ctx.beginPath();
-  ctx.ellipse(dir * 1.5, -2.6, 6.4, 4.2, 0, 0, TAU);
-  ctx.fillStyle = COLORS.outline;
-  ctx.fill();
-  ctx.restore();
-}
-
 /** Compute limb targets (body-local, origin at the body center) for the pose. */
 export function rigFor(st) {
   const c = st.char;
@@ -86,14 +35,16 @@ export function rigFor(st) {
   const t = st.t;
   const s = c.scale;
   const f = c.facing;
+  const shape = bodyOf(st.look);
+  const [shX, shY] = shape.shoulder;
   const r = {
     bodyDX: 0,
     bodyDY: 0,
     bodyRot: 0,
     sx: 1,
     sy: 1,
-    lh: { x: -28, y: 12 },
-    rh: { x: 28, y: 12 },
+    lh: { x: -(shX + 6), y: shY + 9 },
+    rh: { x: shX + 6, y: shY + 9 },
     lf: { x: -9, y: CENTER_Y },
     rf: { x: 9, y: CENTER_Y },
     lLift: 0,
@@ -115,9 +66,12 @@ export function rigFor(st) {
   switch (pose) {
     case 'stand':
     case 'crouch': {
-      r.bodyDY = breath * 0.7;
-      r.lh.y += breath * 0.8;
-      r.rh.y += breath * 0.8;
+      if (pose === 'stand') idleRig(r, st, idleOf(st), breath);
+      else {
+        r.bodyDY = breath * 0.7;
+        r.lh.y += breath * 0.8;
+        r.rh.y += breath * 0.8;
+      }
       if (pose === 'crouch') {
         r.bodyDY += 7;
         r.sx = 1.08;
@@ -127,20 +81,9 @@ export function rigFor(st) {
       }
       break;
     }
-    case 'walk': {
-      const p = a.walkPhase;
-      const lp = p;
-      const rp = p + Math.PI;
-      r.lf = { x: -8 + Math.sin(lp) * 9 * k * f, y: CENTER_Y - Math.max(0, Math.cos(lp)) * 7 * Math.min(k, 1.2) };
-      r.rf = { x: 8 + Math.sin(rp) * 9 * k * f, y: CENTER_Y - Math.max(0, Math.cos(rp)) * 7 * Math.min(k, 1.2) };
-      r.lLift = Math.max(0, Math.cos(lp));
-      r.rLift = Math.max(0, Math.cos(rp));
-      r.bodyDY = -Math.abs(Math.sin(p)) * 2.6 * Math.min(k, 1.3);
-      r.lh = { x: -27 - Math.sin(lp) * 7 * k * f * 0.6, y: 11 + Math.cos(lp) * 2 };
-      r.rh = { x: 27 - Math.sin(rp) * 7 * k * f * 0.6, y: 11 + Math.cos(rp) * 2 };
-      r.bodyRot = clamp(c.vx / (PHYS.run * s), -1, 1) * 0.13;
+    case 'walk':
+      walkRig(r, st, gaitOf(st), a.walkPhase, k, f, t);
       break;
-    }
     case 'air': {
       if (c.tumble) {
         r.lh = { x: -33, y: -2 + Math.sin(t * 22) * 4 };
@@ -184,6 +127,46 @@ export function rigFor(st) {
         const cy = c.y - CENTER_Y * s;
         r.lookOverride = { x: clamp((at.x - c.x) / (320 * s), -1, 1), y: clamp((at.y - cy) / (320 * s), -1, 1) };
       }
+      break;
+    }
+    case 'covereyes': {
+      // Hide and seek: hands over its eyes while you "count".
+      r.lh = { x: -11, y: -5 };
+      r.rh = { x: 11, y: -5 };
+      r.lBend = 6;
+      r.rBend = -6;
+      r.bodyDY = Math.abs(Math.sin(t * 7)) * -1.2;
+      break;
+    }
+    case 'hiding': {
+      // Leaning out from behind a window edge, gripping it, eyes wide.
+      r.bodyRot = f * 0.26;
+      r.bodyDX = f * 2;
+      r.lookOverride = { x: f, y: Math.sin(t * 0.9) * 0.4 };
+      const grip = { x: 18 * f, y: -12 + Math.sin(t * 1.3) * 1.5 };
+      const low = { x: 22 * f, y: 10 };
+      if (f > 0) {
+        r.rh = grip;
+        r.lh = low;
+      } else {
+        r.lh = grip;
+        r.rh = low;
+      }
+      break;
+    }
+    case 'work': {
+      // Focus session: sitting with a laptop on its lap, typing, eyes on the screen.
+      r.bodyDY = 12 + breath * 0.5;
+      r.lf = { x: -12, y: CENTER_Y + 1 };
+      r.rf = { x: 12, y: CENTER_Y + 1 };
+      r.feetFront = true;
+      r.lap = 'laptop';
+      const tap = (k) => Math.max(0, Math.sin(t * 13 + k)) * 2.4;
+      r.lh = { x: -14, y: 15 - tap(0) };
+      r.rh = { x: 14, y: 15 - tap(2.2) };
+      r.lBend = 5;
+      r.rBend = -5;
+      if (t % 9 > 1.2) r.lookOverride = { x: 0.1 * f, y: 0.8 }; // glances up now and then
       break;
     }
     case 'climb': {
@@ -238,8 +221,8 @@ export function rigFor(st) {
       const sin = Math.sin(c.rot);
       const vLocal = c.vx * cos + c.vy * sin;
       const trail = -clamp(vLocal / (900 * s), -1, 1) * 11;
-      r.lh = { x: -3, y: -BODY.h / 2 - 9 };
-      r.rh = { x: 3, y: -BODY.h / 2 - 13 };
+      r.lh = { x: -3, y: shape.top - 9 };
+      r.rh = { x: 3, y: shape.top - 13 };
       r.lBend = -9;
       r.rBend = 9;
       r.lf = { x: -7 + trail, y: CENTER_Y + 1 };
@@ -315,6 +298,37 @@ export function rigFor(st) {
       }
       break;
     }
+    case 'guard': {
+      // Boxing stance: gloves up by the face, bouncing on its toes.
+      const bob = Math.sin(t * 9);
+      r.bodyDY = bob * 1.2;
+      r.bodyRot = f * 0.05;
+      r.lh = { x: f * 5 - 17, y: 6 + bob * 1.5 };
+      r.rh = { x: f * 5 + 17, y: 6 - bob * 1.5 };
+      r.lBend = 7;
+      r.rBend = -7;
+      break;
+    }
+    case 'punch': {
+      // Wind-up (0-0.12 s), jab (to 0.2 s), hold it (to 0.28 s), back to guard (to 0.4 s).
+      const k = a.poseT;
+      const out = k < 0.12 ? -0.35 * (k / 0.12) : k < 0.2 ? -0.35 + 1.35 * ((k - 0.12) / 0.08) : k < 0.28 ? 1 : Math.max(0, 1 - (k - 0.28) / 0.12);
+      const hand = { x: f * (10 + out * 34), y: 3 - out * 3 };
+      const guard = { x: f * 5 - f * 17, y: 6 };
+      const lead = (a.punchHand ?? 1) > 0; // alternate hands
+      if ((f > 0) === lead) {
+        r.rh = hand;
+        r.lh = { x: guard.x, y: guard.y };
+      } else {
+        r.lh = hand;
+        r.rh = { x: -guard.x, y: guard.y };
+      }
+      r.lBend = 4;
+      r.rBend = -4;
+      r.bodyRot = f * (0.05 + Math.max(0, out) * 0.14);
+      r.bodyDX = f * Math.max(0, out) * 3;
+      break;
+    }
     case 'wave': {
       const wv = Math.sin(t * 13) * 7;
       if (f >= 0) r.rh = { x: 27 + wv, y: -24 };
@@ -343,8 +357,8 @@ export function rigFor(st) {
       break;
     }
     case 'carry': {
-      r.lh = { x: -11, y: -34 };
-      r.rh = { x: 11, y: -34 };
+      r.lh = { x: -11, y: shape.top - 11 };
+      r.rh = { x: 11, y: shape.top - 11 };
       r.item = a.carry || 'folder';
       r.bodyDY = Math.sin(t * 6) * 1.2;
       break;
@@ -455,11 +469,216 @@ export function rigFor(st) {
         r.bodyRot += Math.sin(t * 6.5) * 0.12;
         r.bodyDX += Math.sin(t * 6.5) * 3;
         break;
+      case 'peek': {
+        // A notification: little hop, eyes on the app, pointing at it.
+        const at = a.peekAt;
+        if (at) {
+          const cy = c.y - CENTER_Y * s;
+          r.lookOverride = { x: clamp((at.x - c.x) / (260 * s), -1, 1), y: clamp((at.y - cy) / (260 * s), -1, 1) };
+        }
+        r.bodyDY -= 5 * Math.max(0, 1 - k * 4);
+        if (f >= 0) r.rh = { x: 31, y: -3 };
+        else r.lh = { x: -31, y: -3 };
+        break;
+      }
+      case 'gaze':
+        // Eye break: a hand shading the eyes, peering far into the distance.
+        if (f >= 0) r.rh = { x: 9, y: -16 };
+        else r.lh = { x: -9, y: -16 };
+        r.lookOverride = { x: 0.9 * f, y: -0.45 };
+        r.bodyRot += 0.04 * f;
+        break;
       default:
         break;
     }
   }
+  // No legs: sitting down can't push the body into the floor.
+  if (!hasLegs(st.look)) r.bodyDY = Math.min(r.bodyDY, Math.max(0, CENTER_Y - shape.bottom));
   return r;
+}
+
+/** Standing around: the chosen idle style. */
+function idleRig(r, st, idle, breath) {
+  const t = st.t;
+  switch (idle) {
+    case 'bob': {
+      const b = Math.sin(t * 3.2) * 0.5 + 0.5;
+      r.bodyDY = b * 2.8;
+      r.lh.y += b * 2.2;
+      r.rh.y += b * 2.2;
+      r.legBendL = -b * 3;
+      r.legBendR = b * 3;
+      break;
+    }
+    case 'sway': {
+      const w = Math.sin(t * 1.7);
+      r.bodyRot = w * 0.075;
+      r.bodyDX = w * 1.4;
+      r.lh = { x: r.lh.x + w * 2, y: r.lh.y - w * 1.5 };
+      r.rh = { x: r.rh.x + w * 2, y: r.rh.y + w * 1.5 };
+      break;
+    }
+    case 'bounce': {
+      const u = (t % 1.4) / 1.4;
+      const up = idleHop(t);
+      if (u > 0.88) r.bodyDY = ((u - 0.88) / 0.12) * 3; // crouch before the hop
+      r.lh.y -= up * 12;
+      r.rh.y -= up * 12;
+      r.lf.y -= up * 3;
+      r.rf.y -= up * 3;
+      break;
+    }
+    case 'wiggle': {
+      const w = Math.sin(t * 6.5);
+      r.sx = 1 + w * 0.04;
+      r.sy = 1 - w * 0.04;
+      r.bodyRot = Math.sin(t * 3.3) * 0.045;
+      r.lh.y += Math.sin(t * 6.5 + 1) * 2;
+      r.rh.y += Math.sin(t * 6.5 + 2.4) * 2;
+      break;
+    }
+    case 'still':
+      break;
+    default:
+      r.bodyDY = breath * 0.7;
+      r.lh.y += breath * 0.8;
+      r.rh.y += breath * 0.8;
+  }
+}
+
+/** Getting around: the walk style's legs, arms and body motion (hop height and rolling come from bodyMotion). */
+function walkRig(r, st, gait, p, k, f, t) {
+  const c = st.char;
+  const s = c.scale;
+  const lp = p;
+  const rp = p + Math.PI;
+  const kk = Math.min(k, 1.2);
+  const step = (stride, lift) => {
+    r.lf = { x: -8 + Math.sin(lp) * stride * k * f, y: CENTER_Y - Math.max(0, Math.cos(lp)) * lift * kk };
+    r.rf = { x: 8 + Math.sin(rp) * stride * k * f, y: CENTER_Y - Math.max(0, Math.cos(rp)) * lift * kk };
+    r.lLift = Math.max(0, Math.cos(lp));
+    r.rLift = Math.max(0, Math.cos(rp));
+  };
+  const lean = clamp(c.vx / (PHYS.run * s), -1, 1);
+  switch (gait) {
+    case 'hop': {
+      const up = hopUp(p);
+      r.lf = { x: -6 - up * 2 * f, y: CENTER_Y - up * 6 };
+      r.rf = { x: 6 - up * 2 * f, y: CENTER_Y - up * 6 };
+      r.lLift = up * 0.8;
+      r.rLift = up * 0.8;
+      r.lh = { x: r.lh.x - up * 2, y: 8 - up * 15 };
+      r.rh = { x: r.rh.x + up * 2, y: 8 - up * 15 };
+      r.bodyRot = f * 0.1 * up;
+      break;
+    }
+    case 'waddle': {
+      step(4, 4);
+      r.bodyRot = Math.sin(p) * 0.17 * Math.min(1, k * 1.5);
+      r.bodyDX = Math.sin(p) * 2.2 * Math.min(1, k * 1.5);
+      r.bodyDY = -Math.abs(Math.cos(p)) * 1.5 * kk;
+      r.lh = { x: r.lh.x - 4, y: 2 + Math.sin(p * 2) * 3 };
+      r.rh = { x: r.rh.x + 4, y: 2 - Math.sin(p * 2) * 3 };
+      r.lBend = -3;
+      r.rBend = 3;
+      break;
+    }
+    case 'strut': {
+      step(11, 8);
+      r.bodyDY = -Math.abs(Math.sin(p)) * 4 * Math.min(k, 1.3);
+      r.faceDY = -Math.abs(Math.sin(p)) * 1.3;
+      r.lh = { x: r.lh.x - Math.sin(lp) * 11 * k * f, y: 7 + Math.cos(lp) * 5 };
+      r.rh = { x: r.rh.x - Math.sin(rp) * 11 * k * f, y: 7 + Math.cos(rp) * 5 };
+      r.lBend = -9;
+      r.rBend = 9;
+      r.bodyRot = -f * 0.05 + Math.sin(p) * 0.05;
+      break;
+    }
+    case 'tiptoe': {
+      step(6, 9);
+      r.bodyDY = -3 - Math.abs(Math.sin(p)) * 1.2 * kk;
+      r.lh = { x: -13, y: 8 + Math.sin(lp) * 1.5 };
+      r.rh = { x: 13, y: 8 + Math.sin(rp) * 1.5 };
+      r.lBend = 6;
+      r.rBend = -6;
+      r.lookOverride = { x: Math.sin(t * 1.6) * 0.9, y: -0.15 }; // shifty eyes
+      break;
+    }
+    case 'float': {
+      const sw = Math.sin(t * 3);
+      r.lf = { x: -8 - f * 3, y: CENTER_Y - 3 + sw * 1.5 };
+      r.rf = { x: 8 - f * 3, y: CENTER_Y - 2 - sw * 1.5 };
+      r.lh = { x: r.lh.x - f * 5, y: 7 + sw * 2 };
+      r.rh = { x: r.rh.x - f * 5, y: 7 - sw * 2 };
+      r.bodyRot = lean * 0.25;
+      break;
+    }
+    case 'roll': {
+      // Tucked into a ball; bodyMotion turns the whole body.
+      r.lh = { x: -16, y: 9 };
+      r.rh = { x: 16, y: 9 };
+      r.lf = { x: -7, y: 29 };
+      r.rf = { x: 7, y: 29 };
+      r.lBend = 6;
+      r.rBend = -6;
+      break;
+    }
+    case 'robot': {
+      // Six stiff poses per stride, straight limbs, no bounce.
+      const q = Math.floor(p / (Math.PI / 3)) * (Math.PI / 3);
+      r.lf = { x: -8 + Math.sin(q) * 8 * k * f, y: CENTER_Y - Math.max(0, Math.cos(q)) * 6 * kk };
+      r.rf = { x: 8 + Math.sin(q + Math.PI) * 8 * k * f, y: CENTER_Y - Math.max(0, Math.cos(q + Math.PI)) * 6 * kk };
+      r.lh = { x: r.lh.x - Math.sin(q) * 7 * k * f, y: r.lh.y };
+      r.rh = { x: r.rh.x - Math.sin(q + Math.PI) * 7 * k * f, y: r.rh.y };
+      r.lBend = 0;
+      r.rBend = 0;
+      r.faceDY = Math.floor(p / Math.PI) % 2 ? 0.8 : 0;
+      break;
+    }
+    default: {
+      step(9, 7);
+      r.bodyDY = -Math.abs(Math.sin(p)) * 2.6 * Math.min(k, 1.3);
+      r.lh = { x: r.lh.x + 1 - Math.sin(lp) * 7 * k * f * 0.6, y: r.lh.y - 1 + Math.cos(lp) * 2 };
+      r.rh = { x: r.rh.x - 1 - Math.sin(rp) * 7 * k * f * 0.6, y: r.rh.y - 1 + Math.cos(rp) * 2 };
+      r.bodyRot = lean * 0.13;
+    }
+  }
+}
+
+function drawLaptop(ctx, t) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = COLORS.outline;
+  // The lid (we see its back), with a softly glowing sparkle logo.
+  ctx.beginPath();
+  ctx.moveTo(-15, 12);
+  ctx.lineTo(15, 12);
+  ctx.quadraticCurveTo(17, 12, 17, 14);
+  ctx.lineTo(16, 27);
+  ctx.lineTo(-16, 27);
+  ctx.lineTo(-17, 14);
+  ctx.quadraticCurveTo(-17, 12, -15, 12);
+  ctx.closePath();
+  ctx.fillStyle = '#C7CCD6';
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(-13, 14, 26, 2);
+  ctx.fillStyle = `rgba(255, 212, 110, ${0.65 + Math.sin(t * 2) * 0.25})`;
+  sparkle(ctx, 0, 19.5, 3.4, 0);
+  ctx.fill();
+  // The keyboard base peeking out below.
+  ctx.beginPath();
+  ctx.moveTo(-19, 27);
+  ctx.lineTo(19, 27);
+  ctx.lineTo(18, 30.5);
+  ctx.lineTo(-18, 30.5);
+  ctx.closePath();
+  ctx.fillStyle = '#AAB1BD';
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawPopcorn(ctx, x, y) {
@@ -659,9 +878,9 @@ function drawMouth(ctx, face, look, talk, t) {
   }
 }
 
-function drawItem(ctx, item, t) {
+function drawItem(ctx, item, t, top = -23) {
   ctx.save();
-  ctx.translate(0, -50);
+  ctx.translate(0, top - 27);
   ctx.rotate(Math.sin(t * 5) * 0.06);
   ctx.lineWidth = 2;
   ctx.strokeStyle = COLORS.outline;
@@ -766,9 +985,11 @@ export function bodyFrame(st) {
   const a = st.anim;
   const s = c.scale;
   const rig = rigFor(st);
+  const shape = bodyOf(st.look);
+  const { lift, roll } = bodyMotion(st);
   const cx = c.x;
-  const cy = c.y - CENTER_Y * s;
-  let rot = c.rot + rig.bodyRot;
+  const cy = c.y - (CENTER_Y + lift) * s;
+  let rot = c.rot + rig.bodyRot + roll;
   if (c.flipT > 0) rot += (1 - clamp(c.flipT / 0.45, 0, 1)) * TAU * c.facing;
   let q = a.squash;
   if (c.mode === 'air' && !c.tumble) q += clamp(-c.vy / (5200 * s), -0.06, 0.1);
@@ -784,18 +1005,19 @@ export function bodyFrame(st) {
     else py *= sy;
     return { x: cx + px * cos - py * sin, y: cy + px * sin + py * cos };
   };
-  return { rig, cx, cy, rot, sx, sy, grounded, cos, sin, toWorld };
+  return { rig, shape, lift, cx, cy, rot, sx, sy, grounded, cos, sin, toWorld };
 }
 
-/** The grappling rope (drawn on the full-screen layer, behind Claude). */
+/** The grappling rope (drawn on the full-screen layer, behind the character). */
 export function drawRope(ctx, st) {
   const c = st.char;
   const rope = c.rope;
   if (rope.state === 'none') return;
+  Object.assign(COLORS, paletteFor(st.look));
   const s = c.scale;
   const t = st.t;
-  const { cx, cy, toWorld } = bodyFrame(st);
-  const hp = toWorld(0, -BODY.h / 2 - 11);
+  const { cx, cy, toWorld, shape } = bodyFrame(st);
+  const hp = toWorld(0, shape.top - 11);
   const hx = rope.state === 'attached' ? rope.ax : rope.hx;
   const hy = rope.state === 'attached' ? rope.ay : rope.hy;
   const slack = rope.state === 'attached' ? Math.max(0, rope.len - Math.hypot(rope.ax - cx, rope.ay - cy)) : 0;
@@ -822,7 +1044,7 @@ export function drawRope(ctx, st) {
 }
 
 /**
- * Draw Claude. The context must be in global screen coordinates (the caller
+ * Draw the character. The context must be in global screen coordinates (the caller
  * translates by the canvas origin).
  */
 export function drawCharacter(ctx, st) {
@@ -831,16 +1053,20 @@ export function drawCharacter(ctx, st) {
   const s = c.scale;
   const t = st.t;
   const face = currentFace(st);
-  const { rig, cx, cy, rot, sx, sy, grounded, cos, sin, toWorld } = bodyFrame(st);
+  const { rig, shape, lift, cx, cy, rot, sx, sy, grounded, cos, sin, toWorld } = bodyFrame(st);
+  const look = st.look ?? DEFAULT_LOOK;
+  Object.assign(COLORS, paletteFor(look));
+  const outfit = { accent: look.accent ?? DEFAULT_LOOK.accent, outline: COLORS.outline, t };
 
-  // Shadow on the ground under Claude.
+  // Shadow on the ground under the character.
   if (st.groundY != null) {
-    const hgt = Math.max(0, st.groundY - c.y);
-    const fade = clamp(1 - hgt / (380 * s), 0, 1);
+    const hgt = Math.max(0, st.groundY - c.y) + lift * s;
+    const fade = clamp(1 - hgt / (380 * s), 0, 1) * (1 - clamp(lift / 60, 0, 0.5));
     if (fade > 0.02) {
+      const w = (shape.hip ? 21 : shape.hw * 0.85) * s;
       ctx.fillStyle = `rgba(40, 18, 10, ${0.22 * fade})`;
       ctx.beginPath();
-      ctx.ellipse(cx, st.groundY - 1.5 * s, 21 * s * (0.6 + 0.4 * fade) * Math.abs(sx), 4.2 * s * (0.6 + 0.4 * fade), 0, 0, TAU);
+      ctx.ellipse(cx, st.groundY - 1.5 * s, w * (0.6 + 0.4 * fade) * Math.abs(sx), 4.2 * s * (0.6 + 0.4 * fade), 0, 0, TAU);
       ctx.fill();
     }
   }
@@ -854,19 +1080,22 @@ export function drawCharacter(ctx, st) {
     ctx.stroke();
   }
 
-  // Antenna stalk (world space so it can lag behind with its spring).
-  const root = toWorld(0, -BODY.h / 2 + 2);
-  const upX = sin;
-  const upY = -cos;
-  const ctrlX = root.x + upX * BODY.antenna * 0.55 * s;
-  const ctrlY = root.y + upY * BODY.antenna * 0.55 * s;
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = COLORS.outline;
-  ctx.lineWidth = 2.4 * s;
-  ctx.beginPath();
-  ctx.moveTo(root.x, root.y);
-  ctx.quadraticCurveTo(ctrlX, ctrlY, a.antX, a.antY);
-  ctx.stroke();
+  // Antenna stalk (world space so it can lag behind with its spring). A hat
+  // makes it longer so it still pokes out of the top.
+  const antenna = look.antenna ?? 'sparkle';
+  if (antenna !== 'none') {
+    const root = toWorld(0, shape.top + 2);
+    const stalk = BODY.antenna + hatLift(look);
+    const ctrlX = root.x + sin * stalk * 0.55 * s;
+    const ctrlY = root.y - cos * stalk * 0.55 * s;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = COLORS.outline;
+    ctx.lineWidth = 2.4 * s;
+    ctx.beginPath();
+    ctx.moveTo(root.x, root.y);
+    ctx.quadraticCurveTo(ctrlX, ctrlY, a.antX, a.antY);
+    ctx.stroke();
+  }
 
   // Body group.
   ctx.save();
@@ -882,77 +1111,106 @@ export function drawCharacter(ctx, st) {
   }
   ctx.translate(rig.bodyDX, rig.bodyDY);
 
-  // Legs (behind the body, or in front when sitting).
-  const hipY = BODY.h / 2 - 6;
+  // Legs (behind the body, or just the feet in front when sitting). Legless bodies glide.
   const lf = { x: rig.lf.x - rig.bodyDX, y: rig.lf.y - rig.bodyDY };
   const rf = { x: rig.rf.x - rig.bodyDX, y: rig.rf.y - rig.bodyDY };
-  const drawLegs = () => {
-    limb(ctx, -8, hipY, lf.x, lf.y - 2, rig.legBendL, 5.2);
-    limb(ctx, 8, hipY, rf.x, rf.y - 2, rig.legBendR, 5.2);
-    foot(ctx, lf.x, lf.y, -1, rig.lLift);
-    foot(ctx, rf.x, rf.y, 1, rig.rLift);
-  };
-  if (!rig.feetFront) drawLegs();
+  const hip = hasLegs(look) ? shape.hip : null;
+  const legStyle = look.legs ?? 'stubby';
+  const armStyle = look.arms ?? 'nubby';
+  if (hip && !rig.feetFront) {
+    leg(ctx, legStyle, -hip[0], hip[1], lf.x, lf.y, rig.legBendL, rig.lLift, -1, COLORS, outfit.accent);
+    leg(ctx, legStyle, hip[0], hip[1], rf.x, rf.y, rig.legBendR, rig.rLift, 1, COLORS, outfit.accent);
+  }
+  // Arms, first pass: behind the body, so they grow out from under its outline.
+  const [shX, shY] = shape.shoulder;
+  const flap = c.mode === 'air' || c.mode === 'held' ? 1 : a.pose === 'walk' ? 0.45 : 0.12;
+  armBack(ctx, armStyle, -shX, shY, rig.lh.x, rig.lh.y, rig.lBend, COLORS, -1, { t, flap });
+  armBack(ctx, armStyle, shX, shY, rig.rh.x, rig.rh.y, rig.rBend, COLORS, 1, { t, flap });
 
   // Body.
-  bodyPath(ctx, BODY.w, BODY.h);
-  const g = ctx.createLinearGradient(0, -BODY.h / 2, 0, BODY.h / 2);
+  const g = ctx.createLinearGradient(0, shape.top, 0, shape.bottom);
   g.addColorStop(0, COLORS.bodyLight);
   g.addColorStop(0.55, COLORS.body);
   g.addColorStop(1, COLORS.bodyDark);
+  shape.path(ctx, t);
+  if (shape.outlineFirst) {
+    // Overlapping puffs: a thick outline underneath, the fill hides its inner half.
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = OUT * 2;
+    ctx.strokeStyle = COLORS.outline;
+    ctx.stroke();
+  }
   ctx.fillStyle = g;
   ctx.fill();
-  // Belly patch.
+  // Belly patch and shine.
   ctx.save();
   ctx.clip();
-  ctx.fillStyle = COLORS.belly;
-  ctx.globalAlpha = 0.55;
-  ctx.beginPath();
-  ctx.ellipse(rig.faceDX * 0.3 + a.lookX * 1.2, 15, 15, 10, 0, 0, TAU);
-  ctx.fill();
+  if (shape.belly) {
+    const [bx, by, brx, bry] = shape.belly;
+    ctx.fillStyle = COLORS.belly;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.ellipse(bx + rig.faceDX * 0.3 + a.lookX * 1.2, by, brx, bry, 0, 0, TAU);
+    ctx.fill();
+  }
+  const [hx, hy, hrx, hry, hrot] = shape.shine;
   ctx.globalAlpha = 0.45;
   ctx.fillStyle = '#FFFFFF';
   ctx.beginPath();
-  ctx.ellipse(-12, -13, 7, 4.2, -0.5, 0, TAU);
+  ctx.ellipse(hx, hy, hrx, hry, hrot, 0, TAU);
   ctx.fill();
   ctx.restore();
-  bodyPath(ctx, BODY.w, BODY.h);
-  ctx.lineWidth = OUT;
-  ctx.strokeStyle = COLORS.outline;
-  ctx.stroke();
+  if (!shape.outlineFirst) {
+    shape.path(ctx, t);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = OUT;
+    ctx.strokeStyle = COLORS.outline;
+    ctx.stroke();
+  }
+  ctx.save();
+  ctx.translate(0, shape.neck[0]);
+  ctx.scale(shape.neck[1], 1);
+  drawNeck(ctx, look.neck, outfit);
+  ctx.restore();
 
   // Face.
-  const look = rig.lookOverride ?? { x: a.lookX, y: a.lookY };
+  const gaze = rig.lookOverride ?? { x: a.lookX, y: a.lookY };
   ctx.save();
-  ctx.translate(look.x * 4.8 + rig.faceDX, look.y * 2.6 + rig.faceDY);
+  ctx.translate(gaze.x * 4.8 + rig.faceDX, gaze.y * 2.6 + rig.faceDY + shape.face);
   if (face.blush > 0) {
     ctx.fillStyle = COLORS.blush;
     ctx.globalAlpha = clamp(face.blush, 0, 1);
     for (const side of [-1, 1]) {
       ctx.beginPath();
-      ctx.ellipse(side * 16.5, 4.5, 4.6, 2.6, 0, 0, TAU);
+      ctx.ellipse(side * shape.blush[0], shape.blush[1] - shape.face, 4.6, 2.6, 0, 0, TAU);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
-  drawEyes(ctx, face, a, look, a.blink);
-  drawBrows(ctx, face, look);
-  drawMouth(ctx, face, look, a.talk, t);
+  drawEyes(ctx, face, a, gaze, a.blink);
+  drawBrows(ctx, face, gaze);
+  drawMouth(ctx, face, gaze, a.talk, t);
+  drawGlasses(ctx, look.glasses, { ...outfit, lx: gaze.x * 1.6, ly: gaze.y * 1.4 });
+  ctx.restore();
+  ctx.save();
+  ctx.translate(0, shape.top + BODY.h / 2); // hats are drawn for a head top at y = -23
+  drawHat(ctx, look.hat, { ...outfit, spin: clamp(Math.abs(c.vx) / (PHYS.run * s) + (c.mode === 'air' ? 0.6 : 0), 0, 1) });
   ctx.restore();
 
-  if (rig.feetFront) {
-    foot(ctx, lf.x, lf.y, -1, 0);
-    foot(ctx, rf.x, rf.y, 1, 0);
+  if (hip && rig.feetFront) {
+    footOnly(ctx, legStyle, lf.x, lf.y, -1, COLORS, outfit.accent);
+    footOnly(ctx, legStyle, rf.x, rf.y, 1, COLORS, outfit.accent);
   }
   if (rig.lap === 'popcorn') drawPopcorn(ctx, 2 * c.facing, 19);
+  if (rig.lap === 'laptop') drawLaptop(ctx, t);
 
-  // Arms (in front of the body).
-  const sh = 3;
-  limb(ctx, -BODY.w / 2 + 3, sh, rig.lh.x, rig.lh.y, rig.lBend, 5);
-  limb(ctx, BODY.w / 2 - 3, sh, rig.rh.x, rig.rh.y, rig.rBend, 5);
-  if (rig.item) drawItem(ctx, rig.item, t);
-  hand(ctx, rig.lh.x, rig.lh.y);
-  hand(ctx, rig.rh.x, rig.rh.y);
+  // Arms, second pass: forearms and hands in front of the body.
+  const midY = (shape.top + shape.bottom) / 2;
+  const halfH = (shape.bottom - shape.top) / 2;
+  const inside = (x, y) => (x / shape.hw) ** 2 + ((y - midY) / halfH) ** 2 < 0.78;
+  armFront(ctx, armStyle, -shX, shY, rig.lh.x, rig.lh.y, rig.lBend, COLORS, -1, { inside });
+  armFront(ctx, armStyle, shX, shY, rig.rh.x, rig.rh.y, rig.rBend, COLORS, 1, { inside });
+  if (rig.item) drawItem(ctx, rig.item, t, shape.top);
   ctx.restore();
 
   // Antenna tip (with glow when thinking / listening / on the beat).
@@ -966,16 +1224,11 @@ export function drawCharacter(ctx, st) {
     ctx.arc(a.antX, a.antY, 18 * s, 0, TAU);
     ctx.fill();
   }
-  ctx.fillStyle = COLORS.tip;
-  ctx.strokeStyle = COLORS.outline;
-  ctx.lineWidth = 1.7 * s;
-  sparkle(ctx, a.antX, a.antY, (5.6 + glow * 1.6 + Math.sin(t * 3) * 0.3) * s, st.flags.thinking ? t * 4 : Math.sin(t * 1.3) * 0.2);
-  ctx.fill();
-  ctx.stroke();
+  drawTip(ctx, antenna, a.antX, a.antY, s, t, glow, st.flags.thinking, rot);
 
   // Dizzy stars orbiting the head.
   if (t < a.dizzyUntil) {
-    const head = toWorld(0, -BODY.h / 2 - 6);
+    const head = toWorld(0, shape.top - 6);
     for (let i = 0; i < 3; i++) {
       const ang = t * 5 + (i * TAU) / 3;
       const px = head.x + Math.cos(ang) * 17 * s;
@@ -990,21 +1243,110 @@ export function drawCharacter(ctx, st) {
   }
 }
 
-/** Axis-aligned bounds of Claude (for hit testing and culling), global coords. */
+/** Axis-aligned bounds of the character (for hit testing and culling), global coords. */
 export function bounds(st, pad = 0) {
   const c = st.char;
   const s = c.scale;
-  const cy = c.y - CENTER_Y * s;
-  const r = (BODY.h / 2 + BODY.antenna + 10) * s + pad;
-  return { x1: c.x - r, y1: cy - r, x2: c.x + r, y2: cy + r };
+  const shape = bodyOf(st.look);
+  const { lift } = bodyMotion(st);
+  const cy = c.y - (CENTER_Y + lift) * s;
+  const r = (Math.max(headRise(st.look), shape.bottom + 8, shape.hw + 14) + 10) * s + pad;
+  return { x1: c.x - r, y1: cy - r, x2: c.x + r, y2: cy + Math.max(r, (CENTER_Y + lift + 8) * s + pad) };
 }
 
-/** Is a global point on Claude's body (generous circle for easy grabbing)? */
+/** Is a global point on the character's body (generous circle for easy grabbing)? */
 export function hitTest(st, x, y) {
   const c = st.char;
   const s = c.scale;
-  const cy = c.y - CENTER_Y * s;
+  const shape = bodyOf(st.look);
+  const { lift } = bodyMotion(st);
+  const cy = c.y - (CENTER_Y + lift) * s;
   const dx = x - c.x;
   const dy = y - cy;
-  return dx * dx + dy * dy <= (34 * s) ** 2 || (Math.abs(dx) < 16 * s && dy > 0 && dy < CENTER_Y * s + 2);
+  const rad = Math.max(34, shape.hw + 9, -shape.top + 9);
+  return dx * dx + dy * dy <= (rad * s) ** 2 || (Math.abs(dx) < 16 * s && dy > 0 && dy < (CENTER_Y + lift) * s + 2);
+}
+
+/** The antenna tip: the classic sparkle, or a star, heart, bulb, sprout... */
+function drawTip(ctx, style, x, y, s, t, glow, thinking, rot) {
+  ctx.fillStyle = COLORS.tip;
+  ctx.strokeStyle = COLORS.outline;
+  ctx.lineWidth = 1.7 * s;
+  ctx.lineJoin = 'round';
+  const pulse = 1 + glow * 0.28 + Math.sin(t * 3) * 0.05;
+  switch (style) {
+    case 'none':
+      // No antenna; a little light still shows up while it's thinking or listening.
+      if (glow < 0.2) return;
+      ctx.globalAlpha = glow;
+      sparkle(ctx, x, y + 6 * s, 4.5 * s, t * 3);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      return;
+    case 'star': {
+      ctx.beginPath();
+      const r0 = 6.4 * s * pulse;
+      const spin = thinking ? t * 3 : Math.sin(t * 1.2) * 0.15;
+      for (let i = 0; i < 10; i++) {
+        const ang = -Math.PI / 2 + spin + (i * Math.PI) / 5;
+        const rr = i % 2 === 0 ? r0 : r0 * 0.47;
+        const px = x + Math.cos(ang) * rr;
+        const py = y + Math.sin(ang) * rr;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      return;
+    }
+    case 'heart': {
+      const w = 6.2 * s * pulse * (1 + Math.max(0, Math.sin(t * 5)) * 0.08); // a little heartbeat
+      ctx.fillStyle = '#F2566B';
+      ctx.beginPath();
+      ctx.moveTo(x, y + w * 0.75);
+      ctx.bezierCurveTo(x - w * 1.25, y - w * 0.1, x - w * 0.65, y - w * 1.05, x, y - w * 0.35);
+      ctx.bezierCurveTo(x + w * 0.65, y - w * 1.05, x + w * 1.25, y - w * 0.1, x, y + w * 0.75);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      return;
+    }
+    case 'bulb': {
+      const r0 = 5 * s * pulse;
+      ctx.fillStyle = glow > 0.1 ? '#FFF1A8' : '#FFE27A';
+      ctx.beginPath();
+      ctx.arc(x, y, r0, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.beginPath();
+      ctx.arc(x - r0 * 0.35, y - r0 * 0.35, r0 * 0.3, 0, TAU);
+      ctx.fill();
+      return;
+    }
+    case 'sprout': {
+      // Two leaves at the end of the stalk, swaying.
+      const sway = Math.sin(t * 2.2) * 0.2 + rot * 0.3;
+      ctx.fillStyle = '#6CC56E';
+      for (const side of [-1, 1]) {
+        ctx.save();
+        ctx.translate(x, y + 2 * s);
+        ctx.rotate(side * (0.85 + glow * 0.3) + sway);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(-4.2 * s, -5 * s, 0, -10.5 * s * pulse);
+        ctx.quadraticCurveTo(4.2 * s, -5 * s, 0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      return;
+    }
+    default:
+      sparkle(ctx, x, y, (5.6 + glow * 1.6 + Math.sin(t * 3) * 0.3) * s, thinking ? t * 4 : Math.sin(t * 1.3) * 0.2);
+      ctx.fill();
+      ctx.stroke();
+  }
 }

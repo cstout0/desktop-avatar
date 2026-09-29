@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createState, step, applyWorld, setControl, emptyInput } from '../src/renderer/overlay/sim/index.js';
 import { grab, moveHeld, release, fireRope, jumpHeight, centerOf } from '../src/renderer/overlay/sim/physics.js';
+import { onLoud } from '../src/renderer/overlay/sim/behavior.js';
 import { PHYS } from '../src/renderer/overlay/sim/constants.js';
 
 const W = 2560;
@@ -126,7 +127,7 @@ test('grab, drag and throw: flies, tumbles and eventually lands without NaNs', (
   assert.ok(events.includes('land'));
 });
 
-test('hanging by the feet turns Claude upside down', () => {
+test('hanging by the feet turns the character upside down', () => {
   const world = makeWorld();
   const st = createState({ x: 1000, y: H, scale: 1, seed: 3 });
   run(st, world, 0.5);
@@ -158,7 +159,39 @@ test('rope attaches, swings, and release gives a boost', () => {
   assert.equal(st.char.mode, 'air');
 });
 
-test('rope to a window edge + reel in vaults Claude onto the window', () => {
+test('watch-along: sits down near the video, and a loud moment only makes it gasp', () => {
+  const world = makeWorld();
+  const st = createState({ x: 600, y: H, scale: 1, seed: 3 });
+  run(st, world, 1);
+  st.commands.push({ name: 'watch', area: { x1: 1400, y1: 200, x2: 2200, y2: 900 } });
+  let seatedAt = null;
+  run(st, world, 12, emptyInput(), 180, (s) => {
+    if (seatedAt === null && s.anim.pose === 'watch') seatedAt = s.t;
+  });
+  assert.ok(seatedAt !== null, 'sat down to watch');
+  assert.equal(st.brain.name, 'watch');
+  assert.ok(Math.abs(st.char.x - 1800) < 250, `seat near the video (x=${Math.round(st.char.x)})`);
+  onLoud(st); // e.g. an explosion in the movie
+  run(st, world, 1);
+  assert.equal(st.brain.name, 'watch', 'still watching');
+  assert.equal(st.anim.react?.kind, 'gasp');
+});
+
+test('a rope never stays attached once the character is off it', () => {
+  const world = makeWorld();
+  const st = controlled(1000, H, world);
+  run(st, world, 0.3);
+  fireRope(st, world, 1300, 900);
+  run(st, world, 0.5);
+  assert.equal(st.char.rope.state, 'attached');
+  // Knocked off the rope by something other than the rope code (e.g. a teleport).
+  st.char.mode = 'air';
+  run(st, world, 1);
+  assert.equal(st.char.rope.state, 'none', 'rope retracted');
+  assert.equal(st.char.mode, 'ground');
+});
+
+test('rope to a window edge + reel in vaults the character onto the window', () => {
   const plat = { id: 'w9', x1: 900, x2: 1500, y: 700, wx: 900 };
   const world = makeWorld([plat]);
   const st = controlled(1100, H, world);
@@ -171,7 +204,7 @@ test('rope to a window edge + reel in vaults Claude onto the window', () => {
   assert.equal(st.char.ground?.id, 'w9');
 });
 
-test('moving window carries Claude along', () => {
+test('moving window carries the character along', () => {
   const p1 = { id: 'w1', x1: 400, x2: 800, y: 1000, wx: 400 };
   const world1 = makeWorld([p1]);
   const st = controlled(600, 900, world1);
@@ -216,7 +249,7 @@ test('autonomous brain: 3 minutes of life stays in bounds and does varied things
   console.log('  brain states seen:', [...states].join(', '), '| surfaces:', [...grounds].join(', '));
 });
 
-test('music makes an idle Claude dance, and it stops when the music does', () => {
+test('music makes an idle character dance, and it stops when the music does', () => {
   const world = makeWorld();
   const st = createState({ x: 500, y: H, scale: 1, seed: 5 });
   run(st, world, 2);
@@ -290,7 +323,7 @@ test('the screen edge is climbable too', () => {
   assert.ok(st.char.y < y0 - 250, 'climbed the screen edge');
 });
 
-test('a window being dragged carries a climbing Claude along', () => {
+test('a window being dragged carries a climbing character along', () => {
   const world = spotifyWorld();
   const st = controlled(880, H, world);
   run(st, world, 0.3);

@@ -67,6 +67,19 @@ button svg { width: 20px; height: 20px; stroke: #4A2317; stroke-width: 2; stroke
 #send { background: #D9704C; }
 #send:hover { background: #E8835E; }
 #send svg { stroke: #FFFDF8; }
+#send .check { display: none; }
+
+/* Naming mode: a 🎲 for ideas instead of the mic, and a check mark to confirm. */
+#dice { display: none; }
+#dice svg rect { fill: none; }
+#dice .pip { fill: #4A2317; stroke: none; }
+body.naming #dice { display: grid; }
+body.naming #mic { display: none; }
+body.naming #send .arrow { display: none; }
+body.naming #send .check { display: inline; }
+body.naming #pill { border-color: #D9704C; }
+#dice.rolled svg { animation: roll 0.35s cubic-bezier(0.3, 1.4, 0.5, 1); }
+@keyframes roll { from { transform: rotate(-200deg) scale(0.7); } to { transform: none; } }
 
 :root { --level: 0; }
 /* Listening: red, pulsing, and a glow ring that grows with your voice. */
@@ -106,15 +119,19 @@ body.heard #text { color: #2F7A45; }
 
 #status {
   position: absolute;
-  left: 30px;
-  right: 24px;
-  top: 70px;
+  left: 22px;
+  right: 22px;
+  top: 68px;
   display: flex;
   align-items: center;
   gap: 7px;
+  padding: 4px 12px;
+  border-radius: 12px;
+  /* Dark backing so the line stays readable on bright wallpapers and windows. */
+  background: rgba(38, 22, 16, 0.72);
   color: #FFF4EC;
   font: 600 11.5px "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 6px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
   opacity: 0;
   transition: opacity 0.2s 0.1s;
 }

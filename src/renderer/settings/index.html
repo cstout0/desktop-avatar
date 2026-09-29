@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: data:">
+<title>Desktop Avatar settings</title>
+<link rel="stylesheet" href="./settings.css">
+</head>
+<body>
+  <header class="titlebar">
+    <span class="app-mark" aria-hidden="true">✦</span>
+    <span id="roomTitle">My buddy's room</span>
+    <span class="saved" id="saved">Saved</span>
+  </header>
+  <div class="shell">
+    <nav class="sidebar" id="nav" aria-label="Settings sections"></nav>
+    <main class="main">
+      <section class="stage" id="stage" aria-label="Live preview"></section>
+      <div class="content" id="content"></div>
+    </main>
+  </div>
+  <script type="module" src="./settings.js"></script>
+</body>
+</html>
